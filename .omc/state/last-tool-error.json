@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"go build ./...\",\"description\":\"Build to verify\"}",
-  "error": "Exit code 1\n# github.com/Young-us/ycode/internal/ui\ninternal\\ui\\tui_modern.go:2978:19: m.orchestrator.EnsureAllToolCategoriesLoaded undefined (type *agent.Orchestrator has no field or method EnsureAllToolCategoriesLoaded)",
-  "timestamp": "2026-03-27T03:13:18.712Z",
-  "retry_count": 2
-}
