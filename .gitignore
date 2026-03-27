@@ -1,0 +1,44 @@
+# Binaries
+ycode
+ycode.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+coverage.html
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Configuration with secrets
+.env
+.env.local
+.ycode/config.yaml
+
+# Build artifacts
+dist/
+
+# Other
+.ycode
+.claude

@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"go build ./...\",\"timeout\":60000,\"description\":\"Build the project to verify changes compile\"}",
+  "error": "Exit code 1\n# github.com/Young-us/ycode/internal/mcp\ninternal\\mcp\\client.go:771:9: cannot use &mcpToolAdapter{…} (value of type *mcpToolAdapter) as tools.Tool value in return statement: *mcpToolAdapter does not implement tools.Tool (missing method Category)",
+  "timestamp": "2026-03-26T15:15:18.828Z",
+  "retry_count": 1
+}

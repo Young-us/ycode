@@ -1,0 +1,365 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1774537723048,
+  "projectRoot": "d:\\Learn\\ycode",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Go",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "go.mod"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "go",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "scripts"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "cmd": {
+      "path": "cmd",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1774537723033,
+      "keyFiles": []
+    },
+    "configs": {
+      "path": "configs",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1774537723033,
+      "keyFiles": [
+        "default.yaml"
+      ]
+    },
+    "internal": {
+      "path": "internal",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1774537723033,
+      "keyFiles": []
+    },
+    "plugins": {
+      "path": "plugins",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1774537723034,
+      "keyFiles": [
+        "README.md"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 0,
+      "lastAccessed": 1774537723035,
+      "keyFiles": []
+    },
+    "skills": {
+      "path": "skills",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1774537723035,
+      "keyFiles": []
+    },
+    "internal\\app": {
+      "path": "internal\\app",
+      "purpose": "Application code",
+      "fileCount": 1,
+      "lastAccessed": 1774537723037,
+      "keyFiles": [
+        "app.go"
+      ]
+    },
+    "internal\\config": {
+      "path": "internal\\config",
+      "purpose": "Configuration files",
+      "fileCount": 4,
+      "lastAccessed": 1774537723038,
+      "keyFiles": [
+        "config.go",
+        "config_test.go",
+        "tokensize.go"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "internal\\ui\\tui_modern.go",
+      "accessCount": 170,
+      "lastAccessed": 1774578845049,
+      "type": "file"
+    },
+    {
+      "path": "internal\\llm\\anthropic.go",
+      "accessCount": 37,
+      "lastAccessed": 1774566387644,
+      "type": "directory"
+    },
+    {
+      "path": "internal\\ui\\autocomplete.go",
+      "accessCount": 28,
+      "lastAccessed": 1774564984255,
+      "type": "file"
+    },
+    {
+      "path": "internal\\command\\builtin.go",
+      "accessCount": 28,
+      "lastAccessed": 1774571875267,
+      "type": "file"
+    },
+    {
+      "path": "internal\\command\\manager.go",
+      "accessCount": 24,
+      "lastAccessed": 1774576464693,
+      "type": "file"
+    },
+    {
+      "path": "internal\\agent\\loop.go",
+      "accessCount": 24,
+      "lastAccessed": 1774578693540,
+      "type": "file"
+    },
+    {
+      "path": "internal\\agent\\orchestrator.go",
+      "accessCount": 16,
+      "lastAccessed": 1774578712287,
+      "type": "directory"
+    },
+    {
+      "path": "internal\\ui\\tui_final.go",
+      "accessCount": 13,
+      "lastAccessed": 1774567734073,
+      "type": "file"
+    },
+    {
+      "path": "internal/ui/tui_modern.go",
+      "accessCount": 10,
+      "lastAccessed": 1774553596710,
+      "type": "directory"
+    },
+    {
+      "path": "internal/ui",
+      "accessCount": 5,
+      "lastAccessed": 1774553210049,
+      "type": "directory"
+    },
+    {
+      "path": "internal\\ui",
+      "accessCount": 5,
+      "lastAccessed": 1774577374561,
+      "type": "directory"
+    },
+    {
+      "path": "internal\\mcp\\client.go",
+      "accessCount": 4,
+      "lastAccessed": 1774538163919,
+      "type": "file"
+    },
+    {
+      "path": "internal\\app\\app.go",
+      "accessCount": 4,
+      "lastAccessed": 1774571840937,
+      "type": "file"
+    },
+    {
+      "path": "internal\\tools\\git.go",
+      "accessCount": 4,
+      "lastAccessed": 1774575589854,
+      "type": "file"
+    },
+    {
+      "path": "skills\\git-master\\SKILL.md",
+      "accessCount": 4,
+      "lastAccessed": 1774576692644,
+      "type": "file"
+    },
+    {
+      "path": "internal\\agent",
+      "accessCount": 4,
+      "lastAccessed": 1774577463407,
+      "type": "directory"
+    },
+    {
+      "path": "internal\\tools\\glob.go",
+      "accessCount": 3,
+      "lastAccessed": 1774537837658,
+      "type": "file"
+    },
+    {
+      "path": "internal\\tools\\read.go",
+      "accessCount": 3,
+      "lastAccessed": 1774537837679,
+      "type": "file"
+    },
+    {
+      "path": "internal\\tools\\manager.go",
+      "accessCount": 3,
+      "lastAccessed": 1774537877800,
+      "type": "file"
+    },
+    {
+      "path": "internal\\command",
+      "accessCount": 3,
+      "lastAccessed": 1774578666671,
+      "type": "directory"
+    },
+    {
+      "path": "internal\\tools\\grep.go",
+      "accessCount": 2,
+      "lastAccessed": 1774537819487,
+      "type": "file"
+    },
+    {
+      "path": "internal\\tools\\write.go",
+      "accessCount": 2,
+      "lastAccessed": 1774537820646,
+      "type": "file"
+    },
+    {
+      "path": "internal\\tools\\edit.go",
+      "accessCount": 2,
+      "lastAccessed": 1774537821839,
+      "type": "file"
+    },
+    {
+      "path": "internal\\tools\\bash.go",
+      "accessCount": 2,
+      "lastAccessed": 1774537822997,
+      "type": "file"
+    },
+    {
+      "path": "internal\\tools\\lsp.go",
+      "accessCount": 2,
+      "lastAccessed": 1774537825395,
+      "type": "file"
+    },
+    {
+      "path": "internal\\tools\\ast.go",
+      "accessCount": 2,
+      "lastAccessed": 1774537826594,
+      "type": "file"
+    },
+    {
+      "path": "internal\\tools\\tool.go",
+      "accessCount": 2,
+      "lastAccessed": 1774537837619,
+      "type": "file"
+    },
+    {
+      "path": "internal/tools",
+      "accessCount": 2,
+      "lastAccessed": 1774537846387,
+      "type": "directory"
+    },
+    {
+      "path": "internal/command/manager.go",
+      "accessCount": 2,
+      "lastAccessed": 1774551120800,
+      "type": "directory"
+    },
+    {
+      "path": "internal/llm",
+      "accessCount": 2,
+      "lastAccessed": 1774554347609,
+      "type": "directory"
+    },
+    {
+      "path": "internal\\llm",
+      "accessCount": 2,
+      "lastAccessed": 1774554656897,
+      "type": "directory"
+    },
+    {
+      "path": "internal/command",
+      "accessCount": 1,
+      "lastAccessed": 1774550185760,
+      "type": "directory"
+    },
+    {
+      "path": "internal/logger",
+      "accessCount": 1,
+      "lastAccessed": 1774551045353,
+      "type": "directory"
+    },
+    {
+      "path": "internal/agent",
+      "accessCount": 1,
+      "lastAccessed": 1774554322828,
+      "type": "directory"
+    },
+    {
+      "path": "internal/command/builtin.go",
+      "accessCount": 1,
+      "lastAccessed": 1774554434246,
+      "type": "directory"
+    },
+    {
+      "path": "internal\\llm\\client.go",
+      "accessCount": 1,
+      "lastAccessed": 1774554663626,
+      "type": "directory"
+    },
+    {
+      "path": "configs\\default.yaml",
+      "accessCount": 1,
+      "lastAccessed": 1774557766377,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 1,
+      "lastAccessed": 1774571280488,
+      "type": "directory"
+    },
+    {
+      "path": "internal\\app",
+      "accessCount": 1,
+      "lastAccessed": 1774571307806,
+      "type": "directory"
+    },
+    {
+      "path": "cmd\\ycode",
+      "accessCount": 1,
+      "lastAccessed": 1774571477528,
+      "type": "directory"
+    },
+    {
+      "path": "internal\\tools",
+      "accessCount": 1,
+      "lastAccessed": 1774575490640,
+      "type": "directory"
+    },
+    {
+      "path": "internal\\skill",
+      "accessCount": 1,
+      "lastAccessed": 1774576359224,
+      "type": "directory"
+    }
+  ],
+  "userDirectives": []
+}
