@@ -33,32 +33,27 @@ type Loop struct {
 	// Partial content for interruption recovery
 	PartialContent  string
 	PartialThinking string
-	// Dynamic tool loading
-	loadedCategories map[tools.ToolCategory]bool
-	toolLoadMutex    sync.Mutex
 }
 
 // NewLoop creates a new agent loop
 func NewLoop(client llm.Client, toolManager *tools.Manager, maxSteps int) *Loop {
 	return &Loop{
-		LLMClient:        client,
-		ToolManager:      toolManager,
-		MaxSteps:         maxSteps,
-		History:          []llm.Message{},
-		Permissions:      DefaultPermissions("normal"),
-		loadedCategories: map[tools.ToolCategory]bool{tools.CategoryBasic: true},
+		LLMClient:   client,
+		ToolManager: toolManager,
+		MaxSteps:    maxSteps,
+		History:     []llm.Message{},
+		Permissions: DefaultPermissions("normal"),
 	}
 }
 
 // NewLoopWithPermissions creates a new agent loop with specific permissions
 func NewLoopWithPermissions(client llm.Client, toolManager *tools.Manager, maxSteps int, permissions *AgentPermissions) *Loop {
 	return &Loop{
-		LLMClient:        client,
-		ToolManager:      toolManager,
-		MaxSteps:         maxSteps,
-		History:          []llm.Message{},
-		Permissions:      permissions,
-		loadedCategories: map[tools.ToolCategory]bool{tools.CategoryBasic: true},
+		LLMClient:   client,
+		ToolManager: toolManager,
+		MaxSteps:    maxSteps,
+		History:     []llm.Message{},
+		Permissions: permissions,
 	}
 }
 
@@ -77,64 +72,9 @@ func (l *Loop) GetSystemPrompt() string {
 	return l.systemPrompt
 }
 
-// getToolDefinitions returns tool definitions for currently loaded categories
+// getToolDefinitions returns all tool definitions
 func (l *Loop) getToolDefinitions() []tools.ToolDefinition {
-	l.toolLoadMutex.Lock()
-	defer l.toolLoadMutex.Unlock()
-
-	categories := make([]tools.ToolCategory, 0, len(l.loadedCategories))
-	for cat := range l.loadedCategories {
-		categories = append(categories, cat)
-	}
-	return l.ToolManager.DefinitionsByCategory(categories...)
-}
-
-// loadToolCategory adds a new tool category to the loaded set
-func (l *Loop) loadToolCategory(cat tools.ToolCategory) bool {
-	l.toolLoadMutex.Lock()
-	defer l.toolLoadMutex.Unlock()
-
-	if l.loadedCategories[cat] {
-		return false // Already loaded
-	}
-
-	l.loadedCategories[cat] = true
-	logger.Info("agent", "Loaded tool category: %v", cat)
-	return true
-}
-
-// getToolCategory returns the category for a given tool name
-func getToolCategory(toolName string) tools.ToolCategory {
-	switch toolName {
-	case "read_file", "glob", "grep", "git":
-		return tools.CategoryBasic
-	case "write_file", "edit_file", "bash":
-		return tools.CategoryWrite
-	case "lsp":
-		return tools.CategoryLSP
-	case "ast":
-		return tools.CategoryAST
-	default:
-		return tools.CategoryBasic
-	}
-}
-
-// ensureToolLoaded checks if a tool's category is loaded and loads it if needed
-func (l *Loop) ensureToolLoaded(toolName string) bool {
-	cat := getToolCategory(toolName)
-	return l.loadToolCategory(cat)
-}
-
-// LoadedCategories returns the set of loaded tool categories
-func (l *Loop) LoadedCategories() map[tools.ToolCategory]bool {
-	l.toolLoadMutex.Lock()
-	defer l.toolLoadMutex.Unlock()
-
-	result := make(map[tools.ToolCategory]bool)
-	for k, v := range l.loadedCategories {
-		result[k] = v
-	}
-	return result
+	return l.ToolManager.Definitions()
 }
 
 // buildMessagesWithSystemPrompt builds the message list with system prompt prepended
@@ -176,9 +116,9 @@ func (l *Loop) Run(ctx context.Context, userInput string, callback func(event ll
 		Content: userInput,
 	})
 
-	// Get tool definitions for currently loaded categories (starts with basic only)
+	// Get tool definitions
 	toolDefs := l.getToolDefinitions()
-	logger.Debug("agent", "Loaded %d tool definitions from %d categories", len(toolDefs), len(l.loadedCategories))
+	logger.Debug("agent", "Loaded %d tool definitions", len(toolDefs))
 
 	// TAOR loop - no artificial step limit
 	// LLM decides when to complete, user can interrupt with ESC
@@ -352,19 +292,6 @@ func (l *Loop) Run(ctx context.Context, userInput string, callback func(event ll
 			return nil
 		}
 
-		// Dynamic tool loading: Check if any tool requires a not-yet-loaded category
-		categoriesAdded := false
-		for _, toolCall := range response.ToolCalls {
-			if l.ensureToolLoaded(toolCall.Name) {
-				categoriesAdded = true
-			}
-		}
-		// If new categories were added, refresh tool definitions for next request
-		if categoriesAdded {
-			toolDefs = l.getToolDefinitions()
-			logger.Info("agent", "Refreshed tool definitions: %d tools from %d categories", len(toolDefs), len(l.loadedCategories))
-		}
-
 		// Act: Execute tool calls
 		// Check if we can run tools in parallel (all read-only tools)
 		canParallelize := true
@@ -381,7 +308,6 @@ func (l *Loop) Run(ctx context.Context, userInput string, callback func(event ll
 			"lsp_definition": true,
 			"lsp_references": true,
 			"lsp_symbols": true,
-			"ast_search":  true,
 		}
 
 		for _, toolCall := range response.ToolCalls {

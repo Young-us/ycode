@@ -30,7 +30,6 @@ const (
 	CategoryBasic    ToolCategory = iota // Basic tools always available (read, glob, grep)
 	CategoryWrite                        // Write operations (write_file, edit_file, bash)
 	CategoryLSP                          // LSP tools (hover, definition, references)
-	CategoryAST                          // AST tools (ast_grep)
 	CategoryGit                          // Git tools (git_status, git_log, etc.)
 )
 

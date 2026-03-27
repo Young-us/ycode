@@ -108,7 +108,6 @@ func newChatCmd() *cobra.Command {
 			toolManager.Register(tools.NewGrepTool(workDir))
 			toolManager.Register(tools.NewBashTool(workDir))
 			toolManager.Register(tools.NewGitTool(workDir))
-			toolManager.Register(tools.NewASTTool(workDir))
 
 			// Initialize MCP clients and register tools
 			mcpClients := make(map[string]*mcp.Client)
