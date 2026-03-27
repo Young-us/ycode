@@ -110,8 +110,14 @@
   "hotPaths": [
     {
       "path": "internal\\ui\\tui_modern.go",
-      "accessCount": 170,
-      "lastAccessed": 1774578845049,
+      "accessCount": 173,
+      "lastAccessed": 1774581228622,
+      "type": "file"
+    },
+    {
+      "path": "internal\\agent\\loop.go",
+      "accessCount": 44,
+      "lastAccessed": 1774581611998,
       "type": "file"
     },
     {
@@ -139,15 +145,9 @@
       "type": "file"
     },
     {
-      "path": "internal\\agent\\loop.go",
-      "accessCount": 24,
-      "lastAccessed": 1774578693540,
-      "type": "file"
-    },
-    {
       "path": "internal\\agent\\orchestrator.go",
-      "accessCount": 16,
-      "lastAccessed": 1774578712287,
+      "accessCount": 22,
+      "lastAccessed": 1774581185264,
       "type": "directory"
     },
     {
@@ -161,6 +161,12 @@
       "accessCount": 10,
       "lastAccessed": 1774553596710,
       "type": "directory"
+    },
+    {
+      "path": "internal\\app\\app.go",
+      "accessCount": 7,
+      "lastAccessed": 1774581487946,
+      "type": "file"
     },
     {
       "path": "internal/ui",
@@ -178,12 +184,6 @@
       "path": "internal\\mcp\\client.go",
       "accessCount": 4,
       "lastAccessed": 1774538163919,
-      "type": "file"
-    },
-    {
-      "path": "internal\\app\\app.go",
-      "accessCount": 4,
-      "lastAccessed": 1774571840937,
       "type": "file"
     },
     {
@@ -205,6 +205,18 @@
       "type": "directory"
     },
     {
+      "path": "internal\\tools\\manager.go",
+      "accessCount": 4,
+      "lastAccessed": 1774580928888,
+      "type": "file"
+    },
+    {
+      "path": "internal\\tools\\tool.go",
+      "accessCount": 4,
+      "lastAccessed": 1774581575375,
+      "type": "file"
+    },
+    {
       "path": "internal\\tools\\glob.go",
       "accessCount": 3,
       "lastAccessed": 1774537837658,
@@ -214,12 +226,6 @@
       "path": "internal\\tools\\read.go",
       "accessCount": 3,
       "lastAccessed": 1774537837679,
-      "type": "file"
-    },
-    {
-      "path": "internal\\tools\\manager.go",
-      "accessCount": 3,
-      "lastAccessed": 1774537877800,
       "type": "file"
     },
     {
@@ -265,12 +271,6 @@
       "type": "file"
     },
     {
-      "path": "internal\\tools\\tool.go",
-      "accessCount": 2,
-      "lastAccessed": 1774537837619,
-      "type": "file"
-    },
-    {
       "path": "internal/tools",
       "accessCount": 2,
       "lastAccessed": 1774537846387,
@@ -292,6 +292,12 @@
       "path": "internal\\llm",
       "accessCount": 2,
       "lastAccessed": 1774554656897,
+      "type": "directory"
+    },
+    {
+      "path": "",
+      "accessCount": 2,
+      "lastAccessed": 1774581534269,
       "type": "directory"
     },
     {
@@ -329,12 +335,6 @@
       "accessCount": 1,
       "lastAccessed": 1774557766377,
       "type": "file"
-    },
-    {
-      "path": "",
-      "accessCount": 1,
-      "lastAccessed": 1774571280488,
-      "type": "directory"
     },
     {
       "path": "internal\\app",
