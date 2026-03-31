@@ -1072,8 +1072,23 @@ func (m *mainAreaModel) renderMessage(msg *ChatMessageFinal, maxWidth int) strin
 		// User message with cyan accent and left border
 		userStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("117"))
-		contentStyle = lipgloss.NewStyle().
+		contentStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("252"))
+
+		// Check if this is a tool result message (contains diff or markdown)
+		isToolResult := strings.HasPrefix(msg.Content, "[Tool:")
+
+		// For tool results, render markdown to show diff properly
+		if isToolResult && m.mdRenderer != nil {
+			rendered, err := m.mdRenderer.Render(msg.Content)
+			if err == nil {
+				wrappedContent = wrapMarkdownContent(rendered, maxWidth-4)
+				// Update cache
+				msg.WrappedContent = wrappedContent
+				msg.WrapWidth = maxWidth
+			}
+		}
+
 		// Add spacing before user message
 		return "\n" + userStyle.Render("> ") + contentStyle.Render(wrappedContent) + "\n"
 
@@ -2406,10 +2421,12 @@ func (m *ModernTUIModel) Init() tea.Cmd {
 	m.SetRetryCallback()
 
 	// Start event listeners (confirmation requests + retry events) and enable mouse
+	// Also start spinner tick for animations
 	return tea.Batch(
 		func() tea.Msg { return tea.EnableMouseCellMotion() },
 		m.pollConfirmRequest(),
 		m.pollRetryEvents(),
+		streamTickCmd(m.streamDebounce), // Start spinner animation loop
 	)
 }
 
@@ -3105,6 +3122,10 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateComponents()
 
 	case StreamTickMsg:
+		// Update spinner animation for all components
+		m.spinnerIndex++
+		m.mainArea.spinnerIndex = m.spinnerIndex
+
 		if m.loading && m.streamingContent != "" {
 			m.updateStreamingContent(m.streamingContent)
 		}

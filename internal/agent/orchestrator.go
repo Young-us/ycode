@@ -917,6 +917,10 @@ func (o *Orchestrator) runCoordinatedTasks(ctx context.Context, originalInput st
 					if event.Type == "content" {
 						result.WriteString(event.Content)
 					}
+					// Forward stream events to main callback for UI updates
+					if o.callback != nil {
+						o.callback(event)
+					}
 				})
 
 				// Save result
@@ -933,6 +937,8 @@ func (o *Orchestrator) runCoordinatedTasks(ctx context.Context, originalInput st
 				// Emit progress event
 				o.emitAgentEvent(AgentEvent{
 					Type:       AgentEventProgress,
+					AgentType:  t.Agent,
+					AgentName:  agentInfo.Name,
 					TaskID:     t.ID,
 					Progress:   len(completed) * 100 / len(tasks),
 					TotalTasks: len(tasks),
@@ -1198,6 +1204,10 @@ func (o *Orchestrator) RunParallel(ctx context.Context, tasks []string) map[stri
 		err = agentInfo.Loop.Run(ctx, task.Description, func(event llm.StreamEvent) {
 			if event.Type == "content" {
 				result.WriteString(event.Content)
+			}
+			// Forward stream events to main callback for UI updates
+			if o.callback != nil {
+				o.callback(event)
 			}
 		})
 
