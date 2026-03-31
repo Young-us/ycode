@@ -1013,6 +1013,14 @@ func (o *Orchestrator) ClearSharedHistory() {
 	o.sharedHistory = make([]llm.Message, 0)
 }
 
+// SetSharedHistory sets the shared conversation history (for session restoration)
+func (o *Orchestrator) SetSharedHistory(history []llm.Message) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.sharedHistory = history
+	logger.Debug("agent", "Shared history restored with %d messages", len(history))
+}
+
 // ClearHistory clears the conversation history of all agents
 func (o *Orchestrator) ClearHistory() {
 	o.mu.Lock()

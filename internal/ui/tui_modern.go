@@ -792,19 +792,7 @@ func (m *mainAreaModel) renderMessages() string {
 		lines = append(lines, msgLines...)
 	}
 
-	// Add tool status bar if there's an active tool call
-	if m.currentToolCall != nil {
-		toolBar := m.renderToolStatusBar(contentWidth)
-		lines = append(lines, "", toolBar)
-	}
-
-	// Add agent status bar if there's an active agent event
-	if m.currentAgent != nil {
-		agentBar := m.renderAgentStatusBar(contentWidth)
-		lines = append(lines, "", agentBar)
-	}
-
-	// Store total lines for scrollbar
+	// Store total lines for scrollbar (messages only, not including status bars)
 	m.totalLines = len(lines)
 
 	// Calculate scroll position
@@ -815,8 +803,25 @@ func (m *mainAreaModel) renderMessages() string {
 	}
 	// Don't re-clamp here - parent model handles it
 
-	// Get visible lines
-	endLine := startLine + m.height
+	// Reserve space for status bars at the bottom
+	statusBarLines := 0
+	if m.currentToolCall != nil {
+		statusBarLines++ // tool bar
+	}
+	if m.currentAgent != nil {
+		statusBarLines++ // agent bar
+	}
+	if statusBarLines > 0 {
+		statusBarLines++ // extra blank line
+	}
+
+	// Get visible lines (reserve space for status bars)
+	availableHeight := m.height - statusBarLines
+	if availableHeight < 1 {
+		availableHeight = 1
+	}
+
+	endLine := startLine + availableHeight
 	if endLine > len(lines) {
 		endLine = len(lines)
 	}
@@ -828,6 +833,19 @@ func (m *mainAreaModel) renderMessages() string {
 		} else {
 			visibleLines = lines[startLine:]
 		}
+	}
+
+	// Fill remaining height with empty lines (minus status bar space)
+	for len(visibleLines) < availableHeight {
+		visibleLines = append(visibleLines, "")
+	}
+
+	// Add status bars at the bottom (fixed, always visible)
+	if m.currentToolCall != nil {
+		visibleLines = append(visibleLines, m.renderToolStatusBar(contentWidth))
+	}
+	if m.currentAgent != nil {
+		visibleLines = append(visibleLines, m.renderAgentStatusBar(contentWidth))
 	}
 
 	// Fill remaining height with empty lines
@@ -2672,6 +2690,16 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.wasPaste = false // Reset flag
 
+			// If in session selection mode, switch to selected session
+			// This check must come BEFORE the empty input check
+			if m.sidebar.focusMode == "recent" && m.sidebarOpen && len(m.sidebar.sessions) > 0 {
+				if m.sidebar.selectedIndex < len(m.sidebar.sessions) {
+					selectedSession := m.sidebar.sessions[m.sidebar.selectedIndex]
+					m.sidebar.focusMode = "chat"
+					return m, m.switchToSession(selectedSession.ID)
+				}
+			}
+
 			// Clean input: remove null bytes and other control characters, then trim
 			// This handles Windows CMD terminal encoding issues
 			cleanInput := strings.Map(func(r rune) rune {
@@ -2732,15 +2760,6 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showAutocomplete = false
 				m.updateComponents()
 				return m, nil
-			}
-
-			// If in session selection mode, switch to selected session
-			if m.sidebar.focusMode == "recent" && m.sidebarOpen && len(m.sidebar.sessions) > 0 {
-				if m.sidebar.selectedIndex < len(m.sidebar.sessions) {
-					selectedSession := m.sidebar.sessions[m.sidebar.selectedIndex]
-					m.sidebar.focusMode = "chat"
-					return m, m.switchToSession(selectedSession.ID)
-				}
 			}
 
 			if time.Since(m.lastSendTime) < m.minSendInterval {
@@ -2998,6 +3017,10 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toolCallHistory = nil // Clear tool history
 			m.mainArea.currentToolCall = nil // Sync to mainArea
 			m.mainArea.toolCallHistory = nil
+			m.currentAgentInfo = nil // Clear agent state on complete
+			m.agentHistory = nil
+			m.mainArea.currentAgent = nil // Sync to mainArea
+			m.mainArea.agentHistory = nil
 			m.recalculateLayout()
 			m.scrollToBottom()
 			m.updateComponents()
@@ -4842,67 +4865,70 @@ func (m *ModernTUIModel) switchToSession(sessionID string) tea.Cmd {
 	}
 
 	// Update history in orchestrator - smart load to save tokens
+	// IMPORTANT: Must set both sharedHistory AND agent loop history
+	// because runWithSharedHistory copies sharedHistory to agent loop
 	if m.orchestrator != nil {
-		// Get current agent and restore history
+		var historyToRestore []llm.Message
+
+		// Check if session has a stored summary (already compacted)
+		if sess.Summary != nil && sess.Summary.Summary != "" {
+			// Build compacted history: summary + recent messages
+			historyToRestore = append(historyToRestore, llm.Message{
+				Role:    "system",
+				Content: fmt.Sprintf("[对话摘要]\n%s", sess.Summary.Summary),
+			})
+
+			// Add messages that came after the summary
+			summaryMsgCount := sess.Summary.MessageCount
+			if summaryMsgCount < len(sess.Messages) {
+				historyToRestore = append(historyToRestore, sess.Messages[summaryMsgCount:]...)
+			}
+		} else {
+			// Check if history is too large and should be auto-compacted
+			maxTokens := m.config.LLM.GetMaxTokens()
+			threshold := m.config.Agent.CompactThreshold
+			if threshold <= 0 {
+				threshold = 0.7 // Default 70%
+			}
+
+			// Estimate token count
+			totalChars := 0
+			for _, msg := range sess.Messages {
+				totalChars += len(msg.Content)
+			}
+			estimatedTokens := totalChars / 4
+
+			// If history is large, keep only recent messages for efficiency
+			if float64(estimatedTokens)/float64(maxTokens) > threshold {
+				// Keep last 10 messages (5 turns) by default for quick switch
+				keepRecent := 10
+				if len(sess.Messages) > keepRecent {
+					// Create a quick summary message
+					quickSummary := fmt.Sprintf("[历史对话] 共 %d 条消息，加载最近 %d 条以节省上下文。使用 /compact 可生成完整摘要。",
+						len(sess.Messages), keepRecent)
+
+					historyToRestore = append(historyToRestore, llm.Message{
+						Role:    "system",
+						Content: quickSummary,
+					})
+					historyToRestore = append(historyToRestore, sess.Messages[len(sess.Messages)-keepRecent:]...)
+				} else {
+					historyToRestore = sess.Messages
+				}
+			} else {
+				// History is small enough, load everything
+				historyToRestore = sess.Messages
+			}
+		}
+
+		// Set shared history on orchestrator (critical for session memory)
+		m.orchestrator.SetSharedHistory(historyToRestore)
+
+		// Also set history on current agent's loop for immediate use
 		currentAgent := m.orchestrator.GetCurrentAgent()
 		agentInfo, err := m.orchestrator.GetAgentInfo(currentAgent)
 		if err == nil && agentInfo.Loop != nil {
-			// Check if session has a stored summary (already compacted)
-			if sess.Summary != nil && sess.Summary.Summary != "" {
-				// Build compacted history: summary + recent messages
-				var compactedHistory []llm.Message
-				compactedHistory = append(compactedHistory, llm.Message{
-					Role:    "system",
-					Content: fmt.Sprintf("[对话摘要]\n%s", sess.Summary.Summary),
-				})
-
-				// Add messages that came after the summary
-				summaryMsgCount := sess.Summary.MessageCount
-				if summaryMsgCount < len(sess.Messages) {
-					compactedHistory = append(compactedHistory, sess.Messages[summaryMsgCount:]...)
-				}
-
-				agentInfo.Loop.SetHistory(compactedHistory)
-			} else {
-				// Check if history is too large and should be auto-compacted
-				maxTokens := m.config.LLM.GetMaxTokens()
-				threshold := m.config.Agent.CompactThreshold
-				if threshold <= 0 {
-					threshold = 0.7 // Default 70%
-				}
-
-				// Estimate token count
-				totalChars := 0
-				for _, msg := range sess.Messages {
-					totalChars += len(msg.Content)
-				}
-				estimatedTokens := totalChars / 4
-
-				// If history is large, keep only recent messages for efficiency
-				if float64(estimatedTokens)/float64(maxTokens) > threshold {
-					// Keep last 10 messages (5 turns) by default for quick switch
-					keepRecent := 10
-					if len(sess.Messages) > keepRecent {
-						// Create a quick summary message
-						quickSummary := fmt.Sprintf("[历史对话] 共 %d 条消息，加载最近 %d 条以节省上下文。使用 /compact 可生成完整摘要。",
-							len(sess.Messages), keepRecent)
-
-						var smartHistory []llm.Message
-						smartHistory = append(smartHistory, llm.Message{
-							Role:    "system",
-							Content: quickSummary,
-						})
-						smartHistory = append(smartHistory, sess.Messages[len(sess.Messages)-keepRecent:]...)
-
-						agentInfo.Loop.SetHistory(smartHistory)
-					} else {
-						agentInfo.Loop.SetHistory(sess.Messages)
-					}
-				} else {
-					// History is small enough, load everything
-					agentInfo.Loop.SetHistory(sess.Messages)
-				}
-			}
+			agentInfo.Loop.SetHistory(historyToRestore)
 		}
 	}
 
