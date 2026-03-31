@@ -2560,6 +2560,9 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Clear retry status
 				m.retryActive = false
 				m.retryStatus = ""
+				// Clear agent status (mainArea.currentAgent is what renders in UI)
+				m.currentAgentInfo = nil
+				m.mainArea.currentAgent = nil
 				// Cancel any ongoing operation
 				if m.cancelFunc != nil {
 					m.cancelFunc()

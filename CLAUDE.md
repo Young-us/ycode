@@ -50,7 +50,7 @@ internal/
 │   ├── workflow.go      # Plan mode types and state management
 │   └── permission.go    # Agent permission system
 ├── app/           # Main application state and TUI (Bubble Tea)
-├── ast/           # Abstract Syntax Tree utilities (placeholder)
+├── ast/           # Abstract Syntax Tree utilities (placeholder - TODO implementations)
 ├── audit/         # Audit logging and sensitive operation management
 ├── command/       # CLI command definitions (Cobra) and slash command manager
 ├── config/        # Configuration management (Viper)
@@ -82,7 +82,16 @@ internal/
 │   ├── web_fetch.go     # Web page fetch and markdown conversion
 │   └── diff.go          # LCS-based diff computation utility
 └── ui/            # UI components (Bubble Tea + Lipgloss)
-    ├── action_bar.go    # Reusable action bar for user decisions
+    ├── tui_modern.go         # Main TUI model with streaming support
+    ├── action_bar.go         # Reusable action bar for user decisions
+    ├── autocomplete.go       # Autocomplete component for input
+    ├── confirmation_dialog.go # Sensitive operation confirmation UI
+    ├── diff_viewer.go        # Diff preview with confirmation
+    └── layout/               # Reusable layout components
+        ├── layout.go         # Interfaces (Focusable, Sizeable, Bindings)
+        ├── container.go      # Container wrapper with padding/borders
+        ├── split.go          # SplitPaneLayout for multi-panel layouts
+        └── overlay.go        # PlaceOverlay for modal positioning
 ```
 
 **Key Design Patterns:**
@@ -91,6 +100,7 @@ internal/
 - **Plugin Architecture**: Loadable plugins for extending functionality with hook support
 - **Skill System**: Reusable, configurable AI capabilities in `skills/` directory
 - **Sandbox System**: Safe command execution with resource limits and restrictions
+- **Layout System**: Reusable UI layout components with Container, SplitPane, and Overlay
 
 ## Core Architecture
 
@@ -164,6 +174,8 @@ Configuration loads in order (later overrides earlier):
 | `internal/llm/anthropic.go` | LLM API client for Anthropic protocol |
 | `internal/tools/manager.go` | Tool registration and execution |
 | `internal/lsp/client.go` | LSP client with JSON-RPC 2.0 protocol support |
+| `internal/ui/tui_modern.go` | Main TUI model with sidebar and streaming |
+| `internal/ui/layout/layout.go` | Layout interfaces (Focusable, Sizeable, Bindings) |
 
 ## Development Guidelines
 
@@ -176,6 +188,10 @@ Configuration loads in order (later overrides earlier):
 - Models implement `tea.Model` interface (`Init`, `Update`, `View`)
 - Use `lipgloss` for styling, `bubbles` for UI components
 - Messages are defined as types in each package
+- Use `internal/ui/layout/` for reusable layout components:
+  - `Container`: Wraps content with padding and borders
+  - `SplitPaneLayout`: Multi-panel layouts with configurable ratios
+  - `PlaceOverlay`: Positions foreground over background
 
 ### Adding New Tools
 1. Create tool in `internal/tools/` implementing the `Tool` interface
@@ -221,6 +237,8 @@ Skills are reusable AI capabilities stored in `skills/` directory:
 | `github.com/charmbracelet/lipgloss` | Styling and layout for TUI |
 | `github.com/charmbracelet/bubbles` | Pre-built TUI components |
 | `github.com/charmbracelet/glamour` | Markdown rendering |
+| `github.com/fsnotify/fsnotify` | File system watcher for LSP |
+| `github.com/muesli/reflow` | Text reflow and truncation for UI |
 | `gopkg.in/yaml.v3` | YAML parsing |
 
 ## Configuration Example
@@ -352,12 +370,27 @@ The orchestrator supports a plan mode workflow (`internal/agent/workflow.go`):
 3. `ExecutePlan`: Executes approved steps with appropriate agent
 4. Supports iterative plan refinement based on feedback
 
-### ActionBar Component
-The ActionBar (`internal/ui/action_bar.go`) is a reusable TUI component for user decisions:
-- Used in plan mode for confirming/modifying/canceling plans
-- Used in audit system for approving sensitive operations
-- Supports keyboard shortcuts (y/n/m) and visual styling
-- Includes input mode for modification suggestions
+### Project Context Integration
+The orchestrator's `SetProjectContext` method (`internal/agent/orchestrator.go`) allows:
+- Loading project-specific context from `CLAUDE.md`
+- Prepending context to each agent's system prompt
+- All agents share the same project context for consistent behavior
+- Context is only added if not already present (prevents duplication)
+
+### UI Components
+Key UI components in `internal/ui/`:
+- `ActionBar`: Reusable action bar for confirm/modify/cancel decisions with keyboard shortcuts (y/n/m)
+- `ConfirmationDialog`: Sensitive operation confirmation with severity levels and remember option
+- `DiffViewer`: Diff preview with scroll and confirmation controls
+- `AutoCompleter`: Command autocomplete for palette input
+- `layout/`: Reusable layout components (Container, SplitPaneLayout, PlaceOverlay)
+
+### Layout Interfaces
+The `internal/ui/layout/layout.go` provides key interfaces:
+- `Focusable`: Components that can receive/lose focus (`Focus()`, `Blur()`, `IsFocused()`)
+- `Sizeable`: Components with configurable dimensions (`SetSize()`, `GetSize()`)
+- `Bindings`: Components with key bindings (`BindingKeys()`)
+- `KeyMapToSlice`: Extracts key.Binding fields from structs using reflection
 
 ### Sandbox Documentation
 See `docs/sandbox-guide.md` for detailed sandbox configuration guide (in Chinese):

@@ -152,7 +152,7 @@ func (t *MyTool) Parameters() []Parameter {
 func (t *MyTool) Execute(ctx context.Context, args map[string]interface{}) (*ToolResult, error) {
     input, ok := args["input"].(string)
     if !ok {
-        return nil, errors.New(errors.ErrCodeInvalidParam, "input must be a string")
+        return nil, errors.New(errors.ErrCodeToolExecution, "input must be a string")
     }
     
     // Implement tool logic
