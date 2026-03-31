@@ -490,6 +490,12 @@ func (c *AnthropicClient) convertTools(toolDefs []tools.ToolDefinition) []anthro
 func (c *AnthropicClient) convertResponse(resp *anthropicResponse) (*Response, error) {
 	result := &Response{}
 
+	// Populate usage information
+	result.Usage = &Usage{
+		InputTokens:  resp.Usage.InputTokens,
+		OutputTokens: resp.Usage.OutputTokens,
+	}
+
 	for _, content := range resp.Content {
 		// Parse content block
 		contentMap, ok := content.(map[string]interface{})

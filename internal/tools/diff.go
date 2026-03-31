@@ -198,3 +198,44 @@ func FormatDiffPlain(diff *DiffResult) string {
 
 	return sb.String()
 }
+
+// FormatDiffForMessage formats a diff for display in chat messages
+// Returns a markdown-formatted diff suitable for UI display
+func FormatDiffForMessage(path string, diff *DiffResult) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("\n**Diff: %s**\n", path))
+	sb.WriteString("```diff\n")
+	sb.WriteString("--- Original\n+++ Modified\n\n")
+
+	// Limit to first 50 lines for message display
+	lineCount := 0
+	maxLines := 50
+
+	for _, op := range diff.Ops {
+		if lineCount >= maxLines {
+			sb.WriteString(fmt.Sprintf("\n... (%d more changes)\n", len(diff.Ops)-lineCount))
+			break
+		}
+
+		switch op.Type {
+		case "add":
+			for _, line := range op.Lines {
+				sb.WriteString(fmt.Sprintf("+ %s\n", line))
+				lineCount++
+			}
+		case "delete":
+			for _, line := range op.Lines {
+				sb.WriteString(fmt.Sprintf("- %s\n", line))
+				lineCount++
+			}
+		case "equal":
+			// Skip equal lines in message preview to save space
+		}
+	}
+
+	sb.WriteString("```\n")
+	sb.WriteString(fmt.Sprintf("\n📊 **Stats:** +%d additions, -%d deletions", diff.Stats.Additions, diff.Stats.Deletions))
+
+	return sb.String()
+}

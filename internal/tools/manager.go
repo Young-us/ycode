@@ -22,8 +22,6 @@ type Manager struct {
 	mu         sync.RWMutex
 	permission PermissionChecker
 	plugins    PluginHookTrigger
-	// File operations manager for safe file handling
-	fileOps *FileOpsManager
 }
 
 // PermissionChecker is called before executing tools
@@ -31,26 +29,11 @@ type PermissionChecker interface {
 	CheckPermission(toolName string, args map[string]interface{}) (bool, error)
 }
 
-// ConfirmationHandler handles file operation confirmations
-type ConfirmationHandler interface {
-	RequestConfirmation(path string, diff *DiffResult) (bool, error)
-}
-
 // NewManager creates a new tool manager
 func NewManager() *Manager {
 	return &Manager{
 		tools: make(map[string]Tool),
 	}
-}
-
-// SetFileOpsManager sets the file operations manager
-func (m *Manager) SetFileOpsManager(fileOps *FileOpsManager) {
-	m.fileOps = fileOps
-}
-
-// GetFileOpsManager returns the file operations manager
-func (m *Manager) GetFileOpsManager() *FileOpsManager {
-	return m.fileOps
 }
 
 // SetPermissionChecker sets the permission checker

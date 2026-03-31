@@ -348,7 +348,7 @@ func (l *Loop) Run(ctx context.Context, userInput string, callback func(event ll
 					if err != nil {
 						logger.Error("agent", "Tool execution failed: %s - %v", tc.Name, err)
 					} else {
-						logger.Info("agent", "Tool %s completed: result_len=%d, is_error=%v", tc.Name, len(result.Content))
+						logger.Info("agent", "Tool %s completed: result_len=%d", tc.Name, len(result.Content))
 					}
 
 					mu.Lock()
@@ -382,6 +382,9 @@ func (l *Loop) Run(ctx context.Context, userInput string, callback func(event ll
 				resultContent := r.result.Content
 				if r.result.IsError {
 					resultContent = "Error: " + resultContent
+				} else if r.result.Diff != nil && r.result.FilePath != "" {
+					// Append diff info for file edit operations
+					resultContent += tools.FormatDiffForMessage(r.result.FilePath, r.result.Diff)
 				}
 
 				l.History = append(l.History, llm.Message{
@@ -418,12 +421,15 @@ func (l *Loop) Run(ctx context.Context, userInput string, callback func(event ll
 					return fmt.Errorf("tool execution error: %w", err)
 				}
 
-				logger.Info("agent", "Tool %s completed: result_len=%d, is_error=%v", toolCall.Name, len(result.Content))
+				logger.Info("agent", "Tool %s completed: result_len=%d", toolCall.Name, len(result.Content))
 
 				// Observe: Add tool result to history
 				resultContent := result.Content
 				if result.IsError {
 					resultContent = "Error: " + resultContent
+				} else if result.Diff != nil && result.FilePath != "" {
+					// Append diff info for file edit operations
+					resultContent += tools.FormatDiffForMessage(result.FilePath, result.Diff)
 				}
 
 				l.History = append(l.History, llm.Message{

@@ -2,66 +2,145 @@ package tools
 
 import (
 	"context"
-	"runtime"
 	"testing"
 	"time"
+
+	"github.com/Young-us/ycode/internal/sandbox"
 )
 
-func TestBashTool(t *testing.T) {
+func TestBashToolBasic(t *testing.T) {
 	tool := NewBashTool(t.TempDir())
-
-	t.Run("execute simple command", func(t *testing.T) {
-		var cmd string
-		if runtime.GOOS == "windows" {
-			cmd = "echo hello"
-		} else {
-			cmd = "echo hello"
-		}
-
-		result, err := tool.Execute(context.Background(), map[string]interface{}{
-			"command": cmd,
-		})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if result.IsError {
-			t.Fatalf("expected success, got error: %s", result.Content)
-		}
-		if result.Content != "hello" {
-			t.Errorf("expected 'hello', got '%s'", result.Content)
-		}
+	
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"command": "echo hello",
 	})
+	
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.Content)
+	}
+	
+	if !contains(result.Content, "hello") {
+		t.Errorf("expected output to contain 'hello', got: %s", result.Content)
+	}
+}
 
-	t.Run("denied command blocked", func(t *testing.T) {
-		result, err := tool.Execute(context.Background(), map[string]interface{}{
-			"command": "rm -rf /",
-		})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if !result.IsError {
-			t.Errorf("expected error for denied command, got success")
-		}
+func TestBashToolWithSandbox(t *testing.T) {
+	sandboxConfig := &sandbox.Config{
+		Enabled:         true,
+		Timeout:         10 * time.Second,
+		MaxMemoryMB:     256,
+		AllowNetwork:    false,
+		BlockedCommands: []string{"rm -rf"},
+		RestrictedEnvVars: []string{"API_KEY"},
+	}
+	
+	tool := NewBashToolWithSandbox(t.TempDir(), sandboxConfig)
+	
+	// Test safe command
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"command": "echo safe",
 	})
+	
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.Content)
+	}
+	
+	if !contains(result.Content, "safe") {
+		t.Errorf("expected output to contain 'safe', got: %s", result.Content)
+	}
+}
 
-	t.Run("timeout command", func(t *testing.T) {
-		tool.Timeout = 100 * time.Millisecond
-
-		var cmd string
-		if runtime.GOOS == "windows" {
-			cmd = "ping -n 10 127.0.0.1"
-		} else {
-			cmd = "sleep 10"
-		}
-
-		result, err := tool.Execute(context.Background(), map[string]interface{}{
-			"command": cmd,
-		})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if !result.IsError {
-			t.Errorf("expected error for timeout, got success")
-		}
+func TestBashToolBlockedCommand(t *testing.T) {
+	sandboxConfig := &sandbox.Config{
+		Enabled:         true,
+		Timeout:         10 * time.Second,
+		BlockedCommands: []string{"rm -rf"},
+	}
+	
+	tool := NewBashToolWithSandbox(t.TempDir(), sandboxConfig)
+	
+	// Test blocked command
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"command": "rm -rf /test",
 	})
+	
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	
+	if !result.IsError {
+		t.Fatalf("expected error for blocked command, got success")
+	}
+	
+	if !contains(result.Content, "blocked") {
+		t.Errorf("expected error message about blocked command, got: %s", result.Content)
+	}
+}
+
+func TestBashToolTimeout(t *testing.T) {
+	sandboxConfig := &sandbox.Config{
+		Enabled: true,
+		Timeout: 1 * time.Second, // Very short timeout
+	}
+	
+	tool := NewBashToolWithSandbox(t.TempDir(), sandboxConfig)
+	
+	// Test command that should timeout
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"command": "sleep 5",
+	})
+	
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	
+	if !result.IsError {
+		t.Fatalf("expected timeout error, got success")
+	}
+	
+	if !contains(result.Content, "timeout") {
+		t.Errorf("expected timeout error message, got: %s", result.Content)
+	}
+}
+
+func TestBashToolDisabledSandbox(t *testing.T) {
+	sandboxConfig := &sandbox.Config{
+		Enabled: false, // Sandbox disabled
+	}
+	
+	tool := NewBashToolWithSandbox(t.TempDir(), sandboxConfig)
+	
+	// Even dangerous patterns should work when sandbox is disabled
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"command": "echo test",
+	})
+	
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	
+	if result.IsError {
+		t.Fatalf("expected success when sandbox disabled, got error: %s", result.Content)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

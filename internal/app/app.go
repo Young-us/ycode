@@ -20,6 +20,7 @@ import (
 	"github.com/Young-us/ycode/internal/lsp"
 	"github.com/Young-us/ycode/internal/mcp"
 	"github.com/Young-us/ycode/internal/plugin"
+	"github.com/Young-us/ycode/internal/sandbox"
 	"github.com/Young-us/ycode/internal/skill"
 	"github.com/Young-us/ycode/internal/tools"
 	"github.com/Young-us/ycode/internal/ui"
@@ -99,15 +100,39 @@ func newChatCmd() *cobra.Command {
 				llmClient = anthropicClient
 			}
 
-			// Initialize tool manager
+			// Initialize sandbox configuration
+			sandboxConfig := &sandbox.Config{
+				Enabled:           cfg.Sandbox.Enabled,
+				Timeout:           cfg.Sandbox.Timeout,
+				MaxMemoryMB:       cfg.Sandbox.MaxMemoryMB,
+				MaxFileSizeMB:     cfg.Sandbox.MaxFileSizeMB,
+				AllowNetwork:      cfg.Sandbox.AllowNetwork,
+				AllowWrite:        cfg.Sandbox.AllowWrite,
+				AllowedPaths:      cfg.Sandbox.AllowedPaths,
+				BlockedCommands:   cfg.Sandbox.BlockedCommands,
+				RestrictedEnvVars: cfg.Sandbox.RestrictedEnvVars,
+			}
+			
+			// If allowed paths is empty, add working directory
+			if len(sandboxConfig.AllowedPaths) == 0 {
+				sandboxConfig.AllowedPaths = []string{workDir}
+			}
+
+			// Initialize tool manager with sandbox-enabled BashTool
 			toolManager := tools.NewManager()
 			toolManager.Register(tools.NewReadFileTool(workDir))
 			toolManager.Register(tools.NewWriteFileTool(workDir))
 			toolManager.Register(tools.NewEditFileTool(workDir))
 			toolManager.Register(tools.NewGlobTool(workDir))
 			toolManager.Register(tools.NewGrepTool(workDir))
-			toolManager.Register(tools.NewBashTool(workDir))
+			
+			// Register BashTool with sandbox configuration
+			bashTool := tools.NewBashToolWithSandbox(workDir, sandboxConfig)
+			toolManager.Register(bashTool)
+			
 			toolManager.Register(tools.NewGitTool(workDir))
+			toolManager.Register(tools.NewWebSearchTool())
+			toolManager.Register(tools.NewWebFetchTool())
 
 			// Initialize MCP clients and register tools
 			mcpClients := make(map[string]*mcp.Client)
@@ -223,13 +248,6 @@ func newChatCmd() *cobra.Command {
 				}
 			}
 
-			// Initialize multi-agent if enabled
-			var multiAgent *agent.MultiAgent
-			if cfg.Agent.MultiAgent.Enabled {
-				multiAgent = agent.NewMultiAgent(llmClient, toolManager, cfg.Agent.MultiAgent.MaxAgents, cfg.Agent.MaxSteps)
-				logger.Info("startup", "Multi-agent enabled with %d agents", cfg.Agent.MultiAgent.MaxAgents)
-			}
-
 			// Initialize skill manager
 			skillManager := skill.NewManager()
 
@@ -279,6 +297,23 @@ func newChatCmd() *cobra.Command {
 				sensitiveOpManager.SetYOLOMode(true)
 			}
 
+			// Determine execution mode
+			execMode := tools.ExecutionMode(cfg.Permissions.Mode)
+			if yolo {
+				execMode = tools.ModeAuto
+			}
+
+			// Create unified permission checker
+			permissionChecker := tools.NewUnifiedPermissionChecker(
+				execMode,
+				nil, // Agent permissions will be set via adapter when agent switches
+				sensitiveOpManager,
+			)
+			toolManager.SetPermissionChecker(permissionChecker)
+
+			// Log execution mode
+			logger.Info("startup", "Execution mode: %s", execMode)
+
 			// Connect plugin manager to orchestrator (for agent hooks)
 			if pluginManager != nil {
 				orchestrator.SetPluginManager(pluginManager)
@@ -314,9 +349,19 @@ func newChatCmd() *cobra.Command {
 			}
 			logger.Info("startup", "Skills: %d", len(skillManager.List()))
 			logger.Info("startup", "Commands: %d", len(cmdManager.List()))
-			if multiAgent != nil {
-				logger.Info("startup", "Multi-agent: enabled")
+			
+			// Sandbox status
+			if cfg.Sandbox.Enabled {
+				logger.Info("startup", "Sandbox: ENABLED")
+				logger.Info("startup", "  - Timeout: %v", cfg.Sandbox.Timeout)
+				logger.Info("startup", "  - Max Memory: %d MB", cfg.Sandbox.MaxMemoryMB)
+				logger.Info("startup", "  - Allow Network: %v", cfg.Sandbox.AllowNetwork)
+				logger.Info("startup", "  - Blocked Commands: %d patterns", len(cfg.Sandbox.BlockedCommands))
+				logger.Info("startup", "  - Protected EnvVars: %d patterns", len(cfg.Sandbox.RestrictedEnvVars))
+			} else {
+				logger.Info("startup", "Sandbox: DISABLED")
 			}
+			
 			if yolo {
 				logger.Info("startup", "Mode: YOLO (auto-approve all)")
 			}
@@ -324,9 +369,9 @@ func newChatCmd() *cobra.Command {
 
 			// Start TUI or simple mode
 			if noUI {
-				return runSimpleMode(orchestrator, cmdManager, sensitiveOpManager)
+				return runSimpleMode(orchestrator, cmdManager, sensitiveOpManager, lspClients, mcpClients)
 			} else {
-				return runTUIMode(orchestrator, cfg, cmdManager, connectedLSPServers, connectedMCPServers, sensitiveOpManager)
+				return runTUIMode(orchestrator, cfg, cmdManager, connectedLSPServers, connectedMCPServers, sensitiveOpManager, permissionChecker, lspClients, mcpClients)
 			}
 		},
 	}
@@ -339,7 +384,7 @@ func newChatCmd() *cobra.Command {
 	return cmd
 }
 
-func runSimpleMode(orchestrator *agent.Orchestrator, cmdManager *command.CommandManager, sensitiveOpManager *audit.SensitiveOperationManager) error {
+func runSimpleMode(orchestrator *agent.Orchestrator, cmdManager *command.CommandManager, sensitiveOpManager *audit.SensitiveOperationManager, lspClients map[string]*lsp.Client, mcpClients map[string]*mcp.Client) error {
 	_ = sensitiveOpManager // Will be used for confirmation in simple mode
 	logger.Info("startup", "Running in simple mode...")
 	logger.Info("startup", "Type 'exit' or press Ctrl+C to quit")
@@ -355,6 +400,8 @@ func runSimpleMode(orchestrator *agent.Orchestrator, cmdManager *command.Command
 		}
 
 		if input == "exit" || input == "quit" {
+			// Shutdown LSP and MCP servers before exit
+			shutdownServers(lspClients, mcpClients)
 			break
 		}
 
@@ -396,9 +443,12 @@ func runSimpleMode(orchestrator *agent.Orchestrator, cmdManager *command.Command
 	return nil
 }
 
-func runTUIMode(orchestrator *agent.Orchestrator, cfg *config.Config, cmdManager *command.CommandManager, connectedLSPServers []string, connectedMCPServers []string, sensitiveOpManager *audit.SensitiveOperationManager) error {
+func runTUIMode(orchestrator *agent.Orchestrator, cfg *config.Config, cmdManager *command.CommandManager, connectedLSPServers []string, connectedMCPServers []string, sensitiveOpManager *audit.SensitiveOperationManager, permissionChecker *tools.UnifiedPermissionChecker, lspClients map[string]*lsp.Client, mcpClients map[string]*mcp.Client) error {
 	// Create modern TUI model with improved layout
-	model := ui.NewModernTUIModel(orchestrator, cfg, cmdManager, connectedLSPServers, connectedMCPServers, sensitiveOpManager)
+	model := ui.NewModernTUIModel(orchestrator, cfg, cmdManager, connectedLSPServers, connectedMCPServers, sensitiveOpManager, permissionChecker)
+
+	// Set up confirmation callback for sensitive operations
+	sensitiveOpManager.SetConfirmationCallback(model.GetConfirmationCallback())
 
 	// Start TUI
 	p := tea.NewProgram(
@@ -407,7 +457,34 @@ func runTUIMode(orchestrator *agent.Orchestrator, cfg *config.Config, cmdManager
 	)
 
 	_, err := p.Run()
+
+	// Shutdown LSP and MCP servers after TUI exits
+	shutdownServers(lspClients, mcpClients)
+
 	return err
+}
+
+// shutdownServers gracefully shuts down LSP and MCP servers
+func shutdownServers(lspClients map[string]*lsp.Client, mcpClients map[string]*mcp.Client) {
+	// Shutdown LSP servers
+	for name, client := range lspClients {
+		logger.Info("shutdown", "Shutting down LSP server: %s", name)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := client.Shutdown(ctx); err != nil {
+			logger.Warn("shutdown", "Failed to shutdown LSP server %s: %v", name, err)
+		}
+		cancel()
+	}
+
+	// Shutdown MCP servers
+	for name, client := range mcpClients {
+		logger.Info("shutdown", "Shutting down MCP server: %s", name)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := client.Disconnect(ctx); err != nil {
+			logger.Warn("shutdown", "Failed to shutdown MCP server %s: %v", name, err)
+		}
+		cancel()
+	}
 }
 
 func newVersionCmd() *cobra.Command {

@@ -253,6 +253,8 @@ func (a *AutoCompleter) triggerFilePathCompletion(input string, cursor int) bool
 		if isSlashPath {
 			// "/" prefix means working directory
 			dir = filepath.Join(a.workingDir, filepath.FromSlash(pathInput[:lastSep]))
+			// Remove leading "/" from dirPrefix since StartPos=1 will preserve it
+			dirPrefix = dirPrefix[1:]
 		} else {
 			dir = filepath.FromSlash(pathInput[:lastSep])
 			if !filepath.IsAbs(dir) {
@@ -265,9 +267,12 @@ func (a *AutoCompleter) triggerFilePathCompletion(input string, cursor int) bool
 			dir = filepath.Join(a.workingDir, filepath.FromSlash(pathInput))
 			if isSlashPath {
 				dir = a.workingDir + string(filepath.Separator) + filepath.FromSlash(pathInput[1:])
+				// Remove leading "/" from dirPrefix since StartPos=1 will preserve it
+				dirPrefix = pathInput[1:]
+			} else {
+				dirPrefix = pathInput
 			}
 			partial = ""
-			dirPrefix = pathInput
 		}
 	} else {
 		// No separator - could be relative to working directory
@@ -334,7 +339,7 @@ func (a *AutoCompleter) getFileSuggestionsWithPrefix(dir, partial, dirPrefix str
 			isDir := entry.IsDir()
 			display := name
 			if isDir {
-				display += string(filepath.Separator)
+				display += "/" // Always use forward slash for display
 			}
 
 			// Text includes the directory prefix so the full path is preserved
@@ -386,12 +391,14 @@ func (a *AutoCompleter) getFileSuggestions(dir, partial string, pathStart int) [
 		if partial == "" || strings.HasPrefix(strings.ToLower(name), strings.ToLower(partial)) {
 			isDir := entry.IsDir()
 			display := name
+			text := name
 			if isDir {
-				display += string(filepath.Separator)
+				display += "/" // Always use forward slash for display
+				text += "/"
 			}
 
 			suggestions = append(suggestions, SuggestionItem{
-				Text:        name,
+				Text:        text,
 				Display:     display,
 				Description: a.getFileDescription(entry),
 				Type:        a.getFileType(entry),
@@ -555,11 +562,8 @@ func (a *AutoCompleter) Accept(input string, cursor int) (string, int) {
 	before := input[:a.state.StartPos]
 	after := input[cursor:]
 
-	// For file paths, preserve the directory prefix if we have one
+	// For file paths, the Text already includes "/" for directories, so use it directly
 	newText := selected.Text
-	if a.state.Type == AutoCompleteFilePath && selected.IsDirectory {
-		newText += string(filepath.Separator)
-	}
 
 	newInput := before + newText + after
 	newCursor := a.state.StartPos + len(newText)

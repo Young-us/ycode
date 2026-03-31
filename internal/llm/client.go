@@ -8,13 +8,17 @@ import (
 	"github.com/Young-us/ycode/internal/tools"
 )
 
+// RetryCallback is called when a retry occurs
+type RetryCallback func(attempt int, reason string, delay time.Duration)
+
 // RetryStatus holds the current retry status in a thread-safe manner
 type RetryStatus struct {
-	mu      sync.RWMutex
-	active  bool
-	attempt int
-	reason  string
-	delay   time.Duration
+	mu       sync.RWMutex
+	active   bool
+	attempt  int
+	reason   string
+	delay    time.Duration
+	callback RetryCallback // Called when retry status changes
 }
 
 // NewRetryStatus creates a new RetryStatus
@@ -22,14 +26,27 @@ func NewRetryStatus() *RetryStatus {
 	return &RetryStatus{}
 }
 
-// Set updates the retry status
-func (r *RetryStatus) Set(attempt int, reason string, delay time.Duration) {
+// SetCallback sets the callback to be called when retry status changes
+func (r *RetryStatus) SetCallback(cb RetryCallback) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.callback = cb
+}
+
+// Set updates the retry status and notifies callback
+func (r *RetryStatus) Set(attempt int, reason string, delay time.Duration) {
+	r.mu.Lock()
 	r.active = true
 	r.attempt = attempt
 	r.reason = reason
 	r.delay = delay
+	cb := r.callback
+	r.mu.Unlock()
+
+	// Call callback outside lock to avoid deadlock
+	if cb != nil {
+		go cb(attempt, reason, delay)
+	}
 }
 
 // Clear clears the retry status

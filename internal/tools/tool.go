@@ -19,8 +19,10 @@ type ToolDefinition struct {
 
 // ToolResult represents the result of a tool execution
 type ToolResult struct {
-	Content string `json:"content"`
-	IsError bool   `json:"is_error"`
+	Content  string      `json:"content"`
+	IsError  bool        `json:"is_error"`
+	Diff     *DiffResult `json:"diff,omitempty"`      // Optional diff info for file edits
+	FilePath string      `json:"file_path,omitempty"` // File path for diff display
 }
 
 // ToolCategory represents the category of a tool

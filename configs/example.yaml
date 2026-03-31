@@ -1,0 +1,114 @@
+# Ycode Example Configuration
+# Copy this file to ~/.ycode/config.yaml for global configuration
+# Or to .ycode/project.yaml for project-specific configuration
+
+# LLM Configuration
+llm:
+  provider: anthropic
+  api_key: ${ANTHROPIC_API_KEY}  # Use environment variable
+  model: claude-sonnet-4-20250514
+  max_tokens: "128k"  # Supports human-readable formats (4k, 128k, 1M)
+  base_url: ""  # Optional: custom API endpoint
+
+# UI Configuration
+ui:
+  theme: auto  # auto, light, dark
+  streaming: true  # Enable streaming responses
+  show_line_numbers: true
+
+# Tools Configuration
+tools:
+  bash:
+    timeout: 30s
+    max_memory_mb: 512  # Maximum memory limit in MB (0 = unlimited)
+    allow_network: true  # Allow network access
+    protected_env_vars:
+      - API_KEY
+      - SECRET
+      - PASSWORD
+      - TOKEN
+      - PRIVATE_KEY
+      - CREDENTIAL
+    denied_commands:
+      - rm -rf /
+      - mkfs
+      - dd if=/dev/zero
+      - ":(){ :|:& };:"
+      - chmod -R 777 /
+  files:
+    max_size: 10MB
+    max_lines: 1000
+    encoding: utf-8
+
+# Sandbox Configuration (NEW!)
+# Provides enhanced security for command execution
+sandbox:
+  enabled: true  # Enable sandbox mode (recommended)
+  timeout: 30s  # Command timeout
+  max_memory_mb: 512  # Memory limit in MB
+  max_file_size_mb: 100  # File size limit in MB
+  allow_network: false  # Disable network access (safer)
+  allow_write: true  # Allow file write operations
+  allowed_paths: []  # Empty = allow working directory only
+  blocked_commands:
+    - rm -rf /
+    - rm -rf /*
+    - mkfs
+    - dd if=/dev/zero
+    - dd if=/dev/urandom
+    - ":(){ :|:& };:"  # Fork bomb
+    - chmod -R 777 /
+    - sudo rm
+    - sudo dd
+  restricted_env_vars:
+    - API_KEY
+    - SECRET
+    - PASSWORD
+    - TOKEN
+    - PRIVATE_KEY
+    - CREDENTIAL
+    - AWS_ACCESS_KEY_ID
+    - AWS_SECRET_ACCESS_KEY
+    - ANTHROPIC_API_KEY
+
+# Permissions Configuration
+permissions:
+  mode: confirm  # confirm, auto, deny
+  always_allow: []
+  always_deny: []
+
+# Agent Configuration
+agent:
+  max_steps: 10
+  auto_compact: true
+  compact_threshold: 0.8
+  multi_agent:
+    enabled: true
+    max_agents: 5
+
+# Logging Configuration
+logging:
+  level: info  # debug, info, warn, error
+  file: ""  # Optional: log file path
+
+# MCP Configuration
+mcp:
+  servers:
+    - name: example
+      command: mcp-server
+      args: []
+      enabled: false
+
+# LSP Configuration
+lsp:
+  servers:
+    - name: gopls
+      command: gopls
+      args: ["serve"]
+      enabled: false
+
+# Plugin Configuration
+plugins:
+  enabled: false
+  directory: plugins/
+  hot_reload: false

@@ -3,18 +3,18 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os/exec"
-	"runtime"
 	"strings"
 	"time"
+
+	"github.com/Young-us/ycode/internal/sandbox"
 )
 
 // BashTool executes shell commands
 type BashTool struct {
-	WorkingDir     string
-	Timeout        time.Duration
-	DeniedCommands []string
-	plugins        PluginHookTrigger
+	WorkingDir string
+	Timeout    time.Duration
+	plugins    PluginHookTrigger
+	sandbox    *sandbox.Sandbox
 }
 
 // NewBashTool creates a new BashTool
@@ -22,12 +22,25 @@ func NewBashTool(workingDir string) *BashTool {
 	return &BashTool{
 		WorkingDir: workingDir,
 		Timeout:    30 * time.Second,
-		DeniedCommands: []string{
-			"rm -rf /",
-			"sudo",
-			"su -",
-		},
 	}
+}
+
+// NewBashToolWithSandbox creates a new BashTool with sandbox enabled
+func NewBashToolWithSandbox(workingDir string, sandboxConfig *sandbox.Config) *BashTool {
+	tool := &BashTool{
+		WorkingDir: workingDir,
+		Timeout:    30 * time.Second,
+	}
+
+	if sandboxConfig != nil && sandboxConfig.Enabled {
+		tool.sandbox = sandbox.New(workingDir, sandboxConfig)
+		// Sync timeout from sandbox config
+		if sandboxConfig.Timeout > 0 {
+			tool.Timeout = sandboxConfig.Timeout
+		}
+	}
+
+	return tool
 }
 
 // SetPluginManager sets the plugin manager for hook triggering
@@ -89,9 +102,94 @@ func (t *BashTool) Execute(ctx context.Context, args map[string]interface{}) (*T
 		}
 	}
 
-	// Check for denied commands
+	// If sandbox is enabled, use sandbox execution
+	if t.sandbox != nil && t.sandbox.IsEnabled() {
+		return t.executeWithSandbox(ctx, command)
+	}
+
+	// Otherwise, use legacy execution (backward compatibility)
+	return t.executeLegacy(ctx, command)
+}
+
+// executeWithSandbox executes command using sandbox
+func (t *BashTool) executeWithSandbox(ctx context.Context, command string) (*ToolResult, error) {
+	result, err := t.sandbox.ExecuteShell(ctx, command)
+	if err != nil {
+		// Check if it's a sandbox policy violation
+		if strings.Contains(err.Error(), "blocked") || strings.Contains(err.Error(), "dangerous") {
+			return &ToolResult{
+				Content: fmt.Sprintf("Security violation: %v", err),
+				IsError: true,
+			}, nil
+		}
+
+		// Other execution errors
+		errorMsg := fmt.Sprintf("Command failed: %v", err)
+		if result != nil && result.Stdout != "" {
+			errorMsg += fmt.Sprintf("\n\nOutput:\n%s", result.Stdout)
+		}
+		if result != nil && result.Stderr != "" {
+			errorMsg += fmt.Sprintf("\n\nError:\n%s", result.Stderr)
+		}
+		return &ToolResult{
+			Content: errorMsg,
+			IsError: true,
+		}, nil
+	}
+
+	// Success - build output
+	output := ""
+	if result.Stdout != "" {
+		output += result.Stdout
+	}
+	if result.Stderr != "" {
+		if output != "" {
+			output += "\n"
+		}
+		output += result.Stderr
+	}
+
+	// Add execution metadata if relevant
+	if result.TimedOut {
+		return &ToolResult{
+			Content: fmt.Sprintf("Command timed out after %v", t.Timeout),
+			IsError: true,
+		}, nil
+	}
+
+	// Check exit code
+	if result.ExitCode != 0 {
+		if output == "" {
+			output = "(command failed with no output)"
+		}
+		return &ToolResult{
+			Content: fmt.Sprintf("Exit code: %d\n%s", result.ExitCode, output),
+			IsError: true,
+		}, nil
+	}
+
+	// Success
+	if output == "" {
+		output = "(command executed successfully with no output)"
+	}
+
+	// Add duration info for long-running commands
+	if result.Duration > 1*time.Second {
+		output += fmt.Sprintf("\n\nDuration: %v", result.Duration)
+	}
+
+	return &ToolResult{
+		Content: output,
+		IsError: false,
+	}, nil
+}
+
+// executeLegacy executes command without sandbox (backward compatibility)
+func (t *BashTool) executeLegacy(ctx context.Context, command string) (*ToolResult, error) {
+	// Check for basic denied commands (legacy behavior)
+	deniedCommands := []string{"rm -rf /", "sudo", "su -"}
 	commandLower := strings.ToLower(command)
-	for _, denied := range t.DeniedCommands {
+	for _, denied := range deniedCommands {
 		if strings.Contains(commandLower, strings.ToLower(denied)) {
 			return &ToolResult{
 				Content: fmt.Sprintf("Error: command contains denied pattern '%s'", denied),
@@ -104,50 +202,53 @@ func (t *BashTool) Execute(ctx context.Context, args map[string]interface{}) (*T
 	execCtx, cancel := context.WithTimeout(ctx, t.Timeout)
 	defer cancel()
 
-	// Determine shell based on platform
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		// Use PowerShell on Windows
-		cmd = exec.CommandContext(execCtx, "powershell", "-Command", command)
-	} else {
-		// Use bash on Unix-like systems
-		cmd = exec.CommandContext(execCtx, "bash", "-c", command)
+	// Execute command
+	result, err := t.sandbox.ExecuteShell(execCtx, command)
+	if err != nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Error: %v", err),
+			IsError: true,
+		}, nil
 	}
 
-	cmd.Dir = t.WorkingDir
+	// Build output
+	output := ""
+	if result.Stdout != "" {
+		output += result.Stdout
+	}
+	if result.Stderr != "" {
+		if output != "" {
+			output += "\n"
+		}
+		output += result.Stderr
+	}
 
-	// Execute command
-	output, err := cmd.CombinedOutput()
-
-	// Handle timeout
-	if execCtx.Err() == context.DeadlineExceeded {
+	// Check for timeout
+	if result.TimedOut {
 		return &ToolResult{
 			Content: fmt.Sprintf("Error: command timed out after %v", t.Timeout),
 			IsError: true,
 		}, nil
 	}
 
-	result := strings.TrimSpace(string(output))
-
-	// Handle execution error
-	if err != nil {
-		errorMsg := fmt.Sprintf("Command failed: %v", err)
-		if result != "" {
-			errorMsg += fmt.Sprintf("\n\nOutput:\n%s", result)
+	// Check exit code
+	if result.ExitCode != 0 {
+		if output == "" {
+			output = "(command failed with no output)"
 		}
 		return &ToolResult{
-			Content: errorMsg,
+			Content: fmt.Sprintf("Exit code: %d\n%s", result.ExitCode, output),
 			IsError: true,
 		}, nil
 	}
 
 	// Success
-	if result == "" {
-		result = "(command executed successfully with no output)"
+	if output == "" {
+		output = "(command executed successfully with no output)"
 	}
 
 	return &ToolResult{
-		Content: result,
+		Content: output,
 		IsError: false,
 	}, nil
 }

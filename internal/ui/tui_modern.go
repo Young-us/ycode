@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Young-us/ycode/internal/agent"
@@ -39,14 +40,123 @@ const (
 // Spinner frames for loading animation
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// retryStatusMsg is sent periodically to poll retry status
-type retryStatusMsg struct{}
+// ChatMessageFinal represents a chat message
+type ChatMessageFinal struct {
+	Role          string // "user", "assistant", "loading", "error", "plan"
+	Content       string
+	Thinking      string // Extended thinking content
+	Timestamp     time.Time
+	RenderedLines int // 渲染后的行数
+	// Cached wrapped content to avoid re-computing on every render
+	WrappedContent  string
+	WrappedThinking string
+	WrapWidth       int // Width used for wrapping, to detect if re-wrap needed
+}
 
-// pollRetryStatus returns a command that sends retry status messages periodically
-func pollRetryStatus() tea.Cmd {
-	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
-		return retryStatusMsg{}
+// Message types for agent communication
+type (
+	// AgentResponseMsgFinal represents a complete agent response
+	AgentResponseMsgFinal struct {
+		Content string
+	}
+
+	// AgentStreamMsgFinal represents a streaming event from the agent
+	AgentStreamMsgFinal struct {
+		Content    string
+		Thinking   string
+		Done       bool
+		Error      error
+		ToolCall   *ToolCallInfo   // Current tool being executed
+		ToolResult *ToolResultInfo // Result of tool execution
+		AgentEvent *AgentEventMsg  // Agent event for UI display
+		PlanEvent  *PlanEventMsg   // Plan event for plan mode
+	}
+
+	// ToolCallInfo represents a tool being called
+	ToolCallInfo struct {
+		Name      string
+		Arguments map[string]interface{}
+	}
+
+	// ToolResultInfo represents the result of a tool call
+	ToolResultInfo struct {
+		Name    string
+		Success bool
+		Content string
+	}
+
+	// AgentEventMsg represents an agent event for UI display
+	AgentEventMsg struct {
+		Type        string // "switch", "start", "complete", "parallel", "progress"
+		AgentType   string
+		AgentName   string
+		Description string
+		TaskID      string
+		Progress    int
+		TotalTasks  int
+		TasksDone   int
+	}
+
+	// PlanEventMsg represents a plan event for plan mode
+	PlanEventMsg struct {
+		Type    string         // "plan_generated", "plan_confirmed", "plan_cancelled"
+		Plan    *agent.PlanResult
+		Message string
+	}
+
+	// AgentDoneMsgFinal signals that the agent has finished
+	AgentDoneMsgFinal struct{}
+
+	// AgentErrorMsgFinal represents an error from the agent
+	AgentErrorMsgFinal struct {
+		Error error
+	}
+
+	// StreamTickMsg is sent periodically for streaming updates
+	StreamTickMsg struct{}
+)
+
+// retryStatusMsg is sent when a retry occurs (event-driven, not polled)
+type retryStatusMsg struct {
+	attempt int
+	reason  string
+	delay   time.Duration
+}
+
+// confirmRequestMsg is sent when a sensitive operation needs confirmation
+type confirmRequestMsg struct {
+	op audit.SensitiveOperation
+}
+
+// pollConfirmRequest waits for confirmation requests from the channel
+// Uses blocking channel wait (no polling, no CPU waste when idle)
+func (m *ModernTUIModel) pollConfirmRequest() tea.Cmd {
+	return func() tea.Msg {
+		// Block until a confirmation request arrives
+		// This uses zero CPU when idle, unlike polling with tea.Tick
+		op, ok := <-m.confirmRequestChan
+		if !ok {
+			return nil // Channel closed
+		}
+		return confirmRequestMsg{op: op}
+	}
+}
+
+// streamTickCmd creates a command that sends a tick message after a delay
+func streamTickCmd(delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return StreamTickMsg{}
 	})
+}
+
+// generateTitleFinal generates a title from the first message
+func generateTitleFinal(message string) string {
+	// Truncate and clean up the message
+	title := message
+	if len(title) > 50 {
+		title = title[:50] + "..."
+	}
+	return title
 }
 
 // ModernTUIModel represents the modern TUI layout with sidebar and organized panels
@@ -101,6 +211,10 @@ type ModernTUIModel struct {
 	lastSendTime    time.Time
 	minSendInterval time.Duration
 
+	// Paste protection - prevent auto-send after paste
+	lastInputTime  time.Time // Last time a character was typed/pasted
+	wasPaste       bool      // Last KeyRunes was a paste operation
+
 	// Streaming support
 	streamChan       chan AgentStreamMsgFinal
 	streamingContent string
@@ -111,6 +225,12 @@ type ModernTUIModel struct {
 	currentToolCall    *ToolCallInfo
 	currentToolResult  *ToolResultInfo
 	toolCallHistory   []ToolCallInfo // Keep history of tool calls in current turn
+
+	// Agent status display
+	currentAgentInfo   *AgentEventMsg
+	agentHistory       []AgentEventMsg // History of agent events
+	parallelTasks      int             // Number of parallel tasks running
+	completedTasks     int             // Completed parallel tasks
 
 	// Spinner animation
 	spinnerIndex int
@@ -175,12 +295,40 @@ type ModernTUIModel struct {
 	pendingFileOp    *PendingFileOperation // File operation waiting for confirmation
 
 	// Sensitive operation confirmation
-	confirmationDialog *ConfirmationDialogModel
-	pendingSensitiveOp bool // Flag for pending sensitive operation
+	confirmationDialog   *ConfirmationDialogModel
+	pendingSensitiveOp   bool                    // Flag for pending sensitive operation
+	pendingSensitiveOpID *audit.SensitiveOperation // Current pending operation details
+
+	// Confirmation synchronization (for blocking confirmation from tool goroutine)
+	confirmRequestChan  chan audit.SensitiveOperation // Receives confirmation requests
+	confirmResponseChan chan audit.ConfirmationResult // Sends confirmation results
+
+	// Retry event channel (event-driven, no polling)
+	retryEventChan chan retryStatusMsg // Receives retry events from LLM client
 
 	// Autocomplete
 	autocomplete *AutoCompleter
 	showAutocomplete bool
+
+	// Plan mode confirmation
+	planState      *PlanConfirmState
+	showPlanConfirm bool
+	actionBar      *ActionBarModel // Reusable action bar component
+
+	// Execution mode (confirm/auto/plan)
+	execMode           tools.ExecutionMode
+	permissionChecker  *tools.UnifiedPermissionChecker
+}
+
+// PlanConfirmState holds state for the plan confirmation UI
+type PlanConfirmState struct {
+	plan          *agent.PlanResult
+	selected      int
+	scrollY       int
+	inputMode     bool   // Whether user is typing modification request
+	inputText     string // Modification request input
+	lastInputTime time.Time // Last time a character was typed/pasted (for paste protection)
+	wasPaste      bool      // Last KeyRunes was a paste operation
 }
 
 // PendingFileOperation holds a file operation awaiting user confirmation
@@ -484,6 +632,10 @@ type mainAreaModel struct {
 	spinnerIndex    int
 	currentToolCall *ToolCallInfo    // Current tool being executed
 	toolCallHistory []ToolCallInfo   // History of tool calls
+	currentAgent    *AgentEventMsg   // Current agent info
+	agentHistory    []AgentEventMsg  // History of agent events
+	mdRenderer      *glamour.TermRenderer // Markdown renderer
+	welcomeMsgIndex int              // Fixed index for welcome message (no random switching)
 }
 
 func (m *mainAreaModel) Init() tea.Cmd                           { return nil }
@@ -501,20 +653,35 @@ func (m *mainAreaModel) View() string {
 }
 
 func (m *mainAreaModel) renderWelcome() string {
+	// Welcome messages that rotate randomly
+	welcomeMessages := []string{
+		"✨ Your AI Coding Partner is Ready ✨",
+		"🚀 Let's Build Something Amazing Together",
+		"💡 Where Ideas Meet Implementation",
+		"🔮 Your Code, Supercharged by AI",
+		"⚡ Ready to Transform Your Vision into Code",
+		"🌟 AI-Powered Development at Your Fingertips",
+		"🎯 Code Smarter, Ship Faster",
+		"✨ Your Intelligent Coding Companion Awaits",
+	}
+
+	// Use fixed welcome message index (no random switching on each render)
+	welcomeMsg := welcomeMessages[m.welcomeMsgIndex%len(welcomeMessages)]
+
 	// Simplified welcome for small terminals
 	if m.width < 60 {
-		smallWelcome := `
+		logo := `
+    ██╗   ██╗ ██████╗
+    ╚██╗ ██╔╝██╔════╝
+     ╚████╔╝ ██║
+      ╚██╔╝  ██║
+       ██║   ╚██████╗
+       ╚═╝    ╚═════╝`
 
-  Welcome to ycode
+		logoStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("117")).Bold(true)
+		msgStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Italic(true)
 
-  Type your request and press Enter
-  /help - Show commands
-  Ctrl+P - Command palette
-  Ctrl+B - Toggle sidebar
-  Ctrl+L - Clear chat`
-
-		welcomeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-		content := welcomeStyle.Render(smallWelcome)
+		content := logoStyle.Render(logo) + "\n\n" + msgStyle.Render("  "+welcomeMsg)
 		lines := strings.Split(content, "\n")
 
 		// Truncate if too many lines
@@ -530,68 +697,72 @@ func (m *mainAreaModel) renderWelcome() string {
 		return strings.Join(lines, "\n")
 	}
 
-	// Original ASCII art logo
-	logo := `
- ╭─────────────────────────────────────────╮
- │                                         │
- │     ██╗   ██╗ ██████╗ ██████╗ ██████╗ ███████╗
- │     ╚██╗ ██╔╝██╔════╝██╔═══██╗██╔══██╗██╔════╝
- │      ╚████╔╝ ██║     ██║   ██║██║  ██║█████╗
- │       ╚██╔╝  ██║     ██║   ██║██║  ██║██╔══╝
- │        ██║   ╚██████╗╚██████╔╝██████╔╝███████╗
- │        ╚═╝    ╚═════╝ ╚═════╝ ╚═════╝ ╚═════╝
- │                                         │
- ╰─────────────────────────────────────────╯`
+	// Full ASCII art logo with modern styling - note: each line is padded to same width
+	logoLines := []string{
+		"    ██╗   ██╗ ██████╗ ██████╗ ██████╗ ███████╗",
+		"    ╚██╗ ██╔╝██╔════╝██╔═══██╗██╔══██╗██╔════╝",
+		"     ╚████╔╝ ██║     ██║   ██║██║  ██║█████╗  ",
+		"      ╚██╔╝  ██║     ██║   ██║██║  ██║██╔══╝  ",
+		"       ██║   ╚██████╗╚██████╔╝██████╔╝███████╗",
+		"       ╚═╝    ╚═════╝ ╚═════╝ ╚═════╝ ╚═════╝",
+	}
 
-	welcome := `
+	// Core capabilities displayed as elegant tags
+	capabilities := "🧠 Understand  ·  📝 Code  ·  🔍 Analyze  ·  🚀 Execute"
 
-  Welcome to ycode - Your AI Coding Assistant
+	// Styling
+	logoStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("117")).Bold(true)
+	welcomeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Italic(true)
+	capStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("153"))
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("60")).
+		Padding(0, 2)
 
-  I can help you with:
-    - Reading and writing code files
-    - Executing shell commands
-    - Searching through your codebase
-    - Git operations
+	// Build each section with consistent centering
+	var lines []string
+	lines = append(lines, "") // Empty line at top
 
-  Quick Start:
-    - Type your request and press Enter
-    - Type /help to see available commands
-    - Press Ctrl+P to open command palette
-    - Press Ctrl+B to toggle sidebar
-    - Press Ctrl+L to clear chat`
+	// Add logo lines - all centered
+	for _, line := range logoLines {
+		styledLine := logoStyle.Render(line)
+		lines = append(lines, centerText(styledLine, m.width))
+	}
 
-	logoStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("117"))
-	welcomeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	lines = append(lines, "") // Empty line
 
-	content := logoStyle.Render(logo) + welcomeStyle.Render(welcome)
+	// Add welcome message - centered
+	lines = append(lines, centerText(welcomeStyle.Render(welcomeMsg), m.width))
+	lines = append(lines, "") // Empty line
 
-	// Split into lines
-	lines := strings.Split(content, "\n")
-
-	// Process each line - wrap if too wide
-	var processedLines []string
-	for _, line := range lines {
-		lineWidth := lipgloss.Width(line)
-		if lineWidth > m.width {
-			// Wrap the line using visual width
-			wrapped := wrapTextContent(line, m.width)
-			processedLines = append(processedLines, strings.Split(wrapped, "\n")...)
-		} else {
-			processedLines = append(processedLines, line)
-		}
+	// Add capabilities in a styled box - centered
+	capBox := boxStyle.Render(capStyle.Render(capabilities))
+	capBoxLines := strings.Split(capBox, "\n")
+	for _, boxLine := range capBoxLines {
+		lines = append(lines, centerText(boxLine, m.width))
 	}
 
 	// Truncate if too many lines
-	if len(processedLines) > m.height {
-		processedLines = processedLines[:m.height]
+	if len(lines) > m.height {
+		lines = lines[:m.height]
 	}
 
 	// Pad with empty lines to exact height
-	for len(processedLines) < m.height {
-		processedLines = append(processedLines, "")
+	for len(lines) < m.height {
+		lines = append(lines, "")
 	}
 
-	return strings.Join(processedLines, "\n")
+	return strings.Join(lines, "\n")
+}
+
+// centerText centers text within a given width
+func centerText(text string, width int) string {
+	textWidth := lipgloss.Width(text)
+	if textWidth >= width {
+		return text
+	}
+	padding := (width - textWidth) / 2
+	return strings.Repeat(" ", padding) + text
 }
 
 func (m *mainAreaModel) renderMessages() string {
@@ -625,6 +796,12 @@ func (m *mainAreaModel) renderMessages() string {
 	if m.currentToolCall != nil {
 		toolBar := m.renderToolStatusBar(contentWidth)
 		lines = append(lines, "", toolBar)
+	}
+
+	// Add agent status bar if there's an active agent event
+	if m.currentAgent != nil {
+		agentBar := m.renderAgentStatusBar(contentWidth)
+		lines = append(lines, "", agentBar)
 	}
 
 	// Store total lines for scrollbar
@@ -730,6 +907,86 @@ func (m *mainAreaModel) renderToolStatusBar(width int) string {
 	return status
 }
 
+// renderAgentStatusBar renders a status bar showing current agent activity
+func (m *mainAreaModel) renderAgentStatusBar(width int) string {
+	if m.currentAgent == nil {
+		return ""
+	}
+
+	// Spinner characters
+	spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	spinnerChar := spinner[m.spinnerIndex%len(spinner)]
+
+	// Agent icon based on type
+	agentIcon := "🤖"
+	agentType := m.currentAgent.AgentType
+	switch agentType {
+	case "explorer":
+		agentIcon = "🔍"
+	case "planner":
+		agentIcon = "📋"
+	case "architect":
+		agentIcon = "🏗️"
+	case "coder":
+		agentIcon = "💻"
+	case "debugger":
+		agentIcon = "🐛"
+	case "tester":
+		agentIcon = "🧪"
+	case "reviewer":
+		agentIcon = "👁️"
+	case "writer":
+		agentIcon = "📝"
+	}
+
+	// Styles
+	agentStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("141")).
+		Bold(true)
+
+	spinnerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("141"))
+
+	typeStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("183"))
+
+	// Build the status bar
+	status := fmt.Sprintf("  %s %s %s",
+		spinnerStyle.Render(spinnerChar),
+		agentIcon,
+		agentStyle.Render(m.currentAgent.AgentName),
+	)
+
+	// Show agent type
+	if m.currentAgent.AgentType != "" && m.currentAgent.AgentType != "default" {
+		status += " " + typeStyle.Render("("+m.currentAgent.AgentType+")")
+	}
+
+	// Show description if available
+	if m.currentAgent.Description != "" {
+		descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+		maxDescLen := width - len(status) - 5
+		if maxDescLen > 0 {
+			// Use rune conversion to properly handle Unicode characters
+			descRunes := []rune(m.currentAgent.Description)
+			if len(descRunes) > maxDescLen {
+				status += " " + descStyle.Render(string(descRunes[:maxDescLen])+"...")
+			} else {
+				status += " " + descStyle.Render(m.currentAgent.Description)
+			}
+		}
+	}
+
+	// Show progress for parallel tasks
+	if m.currentAgent.TotalTasks > 1 {
+		progressStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214"))
+		status += " " + progressStyle.Render(fmt.Sprintf("[%d/%d]", m.currentAgent.TasksDone, m.currentAgent.TotalTasks))
+	}
+
+	return status
+}
+
 // truncatePath shortens a file path for display
 func truncatePath(path string, maxLen int) string {
 	if len(path) <= maxLen {
@@ -792,7 +1049,19 @@ func (m *mainAreaModel) renderMessage(msg *ChatMessageFinal, maxWidth int) strin
 	// Use cached wrapped content if available and width matches
 	wrappedContent := msg.WrappedContent
 	if wrappedContent == "" || msg.WrapWidth != maxWidth {
-		wrappedContent = wrapTextContent(msg.Content, maxWidth-4)
+		// For assistant and plan messages, render markdown if renderer available
+		if (msg.Role == "assistant" || msg.Role == "plan") && m.mdRenderer != nil {
+			rendered, err := m.mdRenderer.Render(msg.Content)
+			if err == nil {
+				// glamour adds ANSI codes, we need to strip them for proper width calculation
+				// but keep them for the final display
+				wrappedContent = wrapMarkdownContent(rendered, maxWidth-4)
+			} else {
+				wrappedContent = wrapTextContent(msg.Content, maxWidth-4)
+			}
+		} else {
+			wrappedContent = wrapTextContent(msg.Content, maxWidth-4)
+		}
 		// Cache the wrapped content
 		msg.WrappedContent = wrappedContent
 		msg.WrapWidth = maxWidth
@@ -812,8 +1081,6 @@ func (m *mainAreaModel) renderMessage(msg *ChatMessageFinal, maxWidth int) strin
 		// Assistant message with green accent
 		assistantStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("46"))
-		contentStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252"))
 
 		// Thinking style for extended thinking
 		thinkingStyle := lipgloss.NewStyle().
@@ -839,7 +1106,9 @@ func (m *mainAreaModel) renderMessage(msg *ChatMessageFinal, maxWidth int) strin
 			result.WriteString("\n") // Add spacing between thinking and content
 		}
 
-		result.WriteString(assistantStyle.Render("< ") + contentStyle.Render(wrappedContent) + "\n")
+		// For markdown-rendered content, don't apply additional styling
+		// wrappedContent already has glamour ANSI codes
+		result.WriteString(assistantStyle.Render("< ") + wrappedContent + "\n")
 		return result.String()
 
 	case "error":
@@ -849,6 +1118,19 @@ func (m *mainAreaModel) renderMessage(msg *ChatMessageFinal, maxWidth int) strin
 		contentStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196"))
 		return errorStyle.Render("! ") + contentStyle.Render(wrappedContent) + "\n"
+
+	case "plan":
+		// Plan message with cyan accent and markdown rendering
+		planStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("12")). // Cyan
+			Bold(true)
+		planContentStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("15"))
+
+		var result strings.Builder
+		result.WriteString(planStyle.Render("📋 AI Response") + "\n\n")
+		result.WriteString(planContentStyle.Render(wrappedContent) + "\n")
+		return result.String()
 
 	case "loading":
 		// Loading with spinner animation
@@ -889,6 +1171,96 @@ func (m *mainAreaModel) renderMessage(msg *ChatMessageFinal, maxWidth int) strin
 	default:
 		return "  " + wrappedContent
 	}
+}
+
+// wrapMarkdownContent handles markdown-rendered content with ANSI codes
+// glamour already adds styling, we just need to ensure proper line wrapping
+// while preserving ANSI escape sequences
+func wrapMarkdownContent(rendered string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return rendered
+	}
+
+	// Split by lines and process each line
+	lines := strings.Split(rendered, "\n")
+	var result []string
+
+	for _, line := range lines {
+		// Measure visual width (ignoring ANSI codes)
+		visualWidth := measureVisualWidth(line)
+		if visualWidth <= maxWidth {
+			result = append(result, line)
+		} else {
+			// Need to wrap this line while preserving ANSI codes
+			wrappedLines := wrapLineWithANSI(line, maxWidth)
+			result = append(result, wrappedLines...)
+		}
+	}
+
+	return strings.Join(result, "\n")
+}
+
+// measureVisualWidth measures the visual width of a string, ignoring ANSI escape codes
+func measureVisualWidth(s string) int {
+	width := 0
+	inANSI := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inANSI = true
+			continue
+		}
+		if inANSI {
+			if r == 'm' {
+				inANSI = false
+			}
+			continue
+		}
+		width++
+	}
+	return width
+}
+
+// wrapLineWithANSI wraps a line containing ANSI codes to fit maxWidth
+func wrapLineWithANSI(line string, maxWidth int) []string {
+	var result []string
+	var current strings.Builder
+	currentWidth := 0
+	inANSI := false
+	var ansiCode strings.Builder
+
+	for _, r := range line {
+		if r == '\x1b' {
+			inANSI = true
+			ansiCode.Reset()
+			ansiCode.WriteRune(r)
+			current.WriteRune(r)
+			continue
+		}
+
+		if inANSI {
+			ansiCode.WriteRune(r)
+			current.WriteRune(r)
+			if r == 'm' {
+				inANSI = false
+			}
+			continue
+		}
+
+		// Regular character
+		if currentWidth >= maxWidth {
+			result = append(result, current.String())
+			current.Reset()
+			currentWidth = 0
+		}
+		current.WriteRune(r)
+		currentWidth++
+	}
+
+	if current.Len() > 0 {
+		result = append(result, current.String())
+	}
+
+	return result
 }
 
 // wrapTextContent wraps text to fit within maxWidth (visual width)
@@ -1136,6 +1508,11 @@ type statusBarModel struct {
 	// Retry status
 	retryStatus  string
 	retryActive  bool
+	// Current agent
+	currentAgent string
+	agentType    string
+	// Execution mode
+	execMode string // "confirm", "auto", or "plan"
 }
 
 func (s *statusBarModel) Init() tea.Cmd                           { return nil }
@@ -1160,10 +1537,48 @@ func (s *statusBarModel) View() string {
 	if escHint == "" {
 		escHint = "ESC x2: interrupt"
 	}
-	leftContent := " " + escHint + " "
 
-	// Center section - tokens
+	// Mode indicator with color
+	modeDisplay := s.execMode
+	modeStyle := lipgloss.NewStyle()
+	switch s.execMode {
+	case "confirm":
+		modeStyle = modeStyle.Foreground(lipgloss.Color("3")) // Yellow
+		modeDisplay = "🔐 confirm"
+	case "auto":
+		modeStyle = modeStyle.Foreground(lipgloss.Color("2")) // Green
+		modeDisplay = "⚡ auto"
+	case "plan":
+		modeStyle = modeStyle.Foreground(lipgloss.Color("6")) // Cyan
+		modeDisplay = "📋 plan"
+	}
+	leftContent := " " + escHint + " | " + modeStyle.Render(modeDisplay) + " "
+
+	// Center section - tokens and agent
 	centerContent := fmt.Sprintf("  %s tokens", formatTokensStatic(s.tokens))
+	if s.currentAgent != "" && s.currentAgent != "Default" {
+		// Show current agent with icon
+		agentIcon := "🤖"
+		switch s.agentType {
+		case "explorer":
+			agentIcon = "🔍"
+		case "planner":
+			agentIcon = "📋"
+		case "architect":
+			agentIcon = "🏗️"
+		case "coder":
+			agentIcon = "💻"
+		case "debugger":
+			agentIcon = "🐛"
+		case "tester":
+			agentIcon = "🧪"
+		case "reviewer":
+			agentIcon = "👁️"
+		case "writer":
+			agentIcon = "📝"
+		}
+		centerContent = fmt.Sprintf(" %s %s | %s tokens", agentIcon, s.currentAgent, formatTokensStatic(s.tokens))
+	}
 
 	// Right section - model and status
 	sidebarStatus := "sidebar: off"
@@ -1380,6 +1795,11 @@ type logViewerModel struct {
 	lines    []string
 	scrollY  int
 	maxLines int // Maximum lines to keep
+
+	// Cache for performance - avoid re-wrapping every frame
+	cachedWrappedLines []string
+	cachedWidth        int
+	linesHash          uint32 // Simple hash to detect changes
 }
 
 func (l *logViewerModel) Init() tea.Cmd                           { return nil }
@@ -1416,56 +1836,6 @@ func (l *logViewerModel) View() string {
 		return text + strings.Repeat(" ", width-textWidth)
 	}
 
-	// Helper: wrap long text to multiple lines
-	wrapLine := func(text string, width int) []string {
-		textWidth := lipgloss.Width(text)
-		if textWidth <= width {
-			return []string{text + strings.Repeat(" ", width-textWidth)}
-		}
-
-		// Need to wrap - handle ANSI codes properly
-		var lines []string
-		currentLine := ""
-		currentWidth := 0
-
-		runes := []rune(text)
-		for i := 0; i < len(runes); i++ {
-			r := runes[i]
-
-			// Handle ANSI escape sequences (don't count them in width)
-			if r == '\x1b' && i+1 < len(runes) && runes[i+1] == '[' {
-				// Find end of ANSI sequence
-				j := i + 2
-				for j < len(runes) && !(runes[j] >= 'A' && runes[j] <= 'Z' || runes[j] >= 'a' && runes[j] <= 'z') {
-					j++
-				}
-				if j < len(runes) {
-					ansiSeq := string(runes[i : j+1])
-					currentLine += ansiSeq
-					i = j
-					continue
-				}
-			}
-
-			charWidth := lipgloss.Width(string(r))
-			if currentWidth+charWidth > width {
-				// Wrap this line
-				lines = append(lines, currentLine+strings.Repeat(" ", width-currentWidth))
-				currentLine = string(r)
-				currentWidth = charWidth
-			} else {
-				currentLine += string(r)
-				currentWidth += charWidth
-			}
-		}
-
-		if currentWidth > 0 {
-			lines = append(lines, currentLine+strings.Repeat(" ", width-currentWidth))
-		}
-
-		return lines
-	}
-
 	var lines []string
 
 	// Title bar
@@ -1479,6 +1849,8 @@ func (l *logViewerModel) View() string {
 	lines = append(lines, sepStyle.Render(separator))
 
 	// Calculate visible log lines
+	// Account for: 2 header lines (title + separator)
+	//              2 footer lines (separator + footer)
 	headerLines := 2
 	footerLines := 2
 	availableLines := l.height - headerLines - footerLines
@@ -1508,13 +1880,14 @@ func (l *logViewerModel) View() string {
 		emptyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 		lines = append(lines, emptyStyle.Render(padToWidth("  No logs yet...", innerWidth)))
 	} else {
-		// First, wrap all log lines and collect them
-		var wrappedLines []struct {
-			text  string
-			level string // "error", "warn", "info", "debug"
+		// OPTIMIZATION: Only process visible lines instead of wrapping ALL logs
+		visibleStart := startIdx
+		visibleEnd := endIdx
+		if visibleEnd > totalLogs {
+			visibleEnd = totalLogs
 		}
 
-		for i := 0; i < totalLogs; i++ {
+		for i := visibleStart; i < visibleEnd && len(lines) < l.height-4; i++ {
 			logLine := "  " + l.lines[i]
 			lowerLine := strings.ToLower(l.lines[i])
 
@@ -1526,58 +1899,50 @@ func (l *logViewerModel) View() string {
 				level = "warn"
 			} else if strings.Contains(lowerLine, "[info]") {
 				level = "info"
-			} else if strings.Contains(lowerLine, "[debug]") {
-				level = "debug"
 			} else if strings.Contains(lowerLine, "error") || strings.Contains(lowerLine, "fail") {
 				level = "error"
-			} else if strings.Contains(lowerLine, "warn") || strings.Contains(lowerLine, "warning") {
+			} else if strings.Contains(lowerLine, "warn") {
 				level = "warn"
 			}
 
-			// Wrap the line and add each wrapped line
-			wrapped := wrapLine(logLine, innerWidth)
-			for _, w := range wrapped {
-				wrappedLines = append(wrappedLines, struct {
-					text  string
-					level string
-				}{text: w, level: level})
+			// Simple truncation for performance (avoid complex wrapping)
+			if lipgloss.Width(logLine) > innerWidth {
+				runes := []rune(logLine)
+				truncated := ""
+				width := 0
+				for _, r := range runes {
+					cw := lipgloss.Width(string(r))
+					if width+cw > innerWidth-3 {
+						break
+					}
+					truncated += string(r)
+					width += cw
+				}
+				logLine = truncated + "..."
+			} else {
+				logLine = padToWidth(logLine, innerWidth)
 			}
-		}
 
-		// Calculate visible range for wrapped lines
-		totalWrapped := len(wrappedLines)
-		startWrappedIdx := l.scrollY
-		if startWrappedIdx < 0 {
-			startWrappedIdx = 0
-		}
-		if startWrappedIdx > totalWrapped-availableLines && totalWrapped > availableLines {
-			startWrappedIdx = totalWrapped - availableLines
-		}
-		endWrappedIdx := startWrappedIdx + availableLines
-		if endWrappedIdx > totalWrapped {
-			endWrappedIdx = totalWrapped
-		}
-
-		// Display wrapped lines with appropriate styling
-		for i := startWrappedIdx; i < endWrappedIdx; i++ {
-			wl := wrappedLines[i]
+			// Apply style
 			var styledLine string
-			switch wl.level {
+			switch level {
 			case "error":
-				styledLine = lipgloss.NewStyle().Foreground(errorColor).Render(wl.text)
+				styledLine = lipgloss.NewStyle().Foreground(errorColor).Render(logLine)
 			case "warn":
-				styledLine = lipgloss.NewStyle().Foreground(warnColor).Render(wl.text)
+				styledLine = lipgloss.NewStyle().Foreground(warnColor).Render(logLine)
 			case "info":
-				styledLine = lipgloss.NewStyle().Foreground(infoColor).Render(wl.text)
+				styledLine = lipgloss.NewStyle().Foreground(infoColor).Render(logLine)
 			default:
-				styledLine = lipgloss.NewStyle().Foreground(timestampColor).Render(wl.text)
+				styledLine = lipgloss.NewStyle().Foreground(timestampColor).Render(logLine)
 			}
 			lines = append(lines, styledLine)
 		}
 	}
 
 	// Fill remaining space with empty lines of correct width
-	for len(lines) < l.height-2 {
+	// Content should fill to l.height - 2 (leaving room for footer: separator + footer text)
+	contentLines := l.height - 2
+	for len(lines) < contentLines {
 		lines = append(lines, strings.Repeat(" ", innerWidth))
 	}
 
@@ -1590,22 +1955,21 @@ func (l *logViewerModel) View() string {
 	}
 	lines = append(lines, footerStyle.Render(padToWidth(scrollInfo, innerWidth)))
 
-	// Ensure exact height
-	for len(lines) > l.height {
-		lines = lines[:l.height]
-	}
+	// Ensure exact height - truncate if needed
+	if len(lines) > l.height {
+			lines = lines[:l.height]
+		}
 
 	// Wrap in border with explicit total width (including border chars)
-	// l.width is the total width including borders, so border style should use it directly
+	// l.width is the total width including borders, so content width = l.width - 2
+	// Height should be content height (l.height - 2 for border), so final result is l.height
 	borderStyle := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(borderColor).
-		Width(l.width - 2). // content width = total - 2 border chars
-		Height(l.height)
+		Width(l.width - 2).
+		Height(l.height - 2)
 
-	result := borderStyle.Render(strings.Join(lines, "\n"))
-
-	return result
+	return borderStyle.Render(strings.Join(lines, "\n"))
 }
 
 func (l *logViewerModel) SetSize(width, height int) tea.Cmd {
@@ -1793,7 +2157,7 @@ func formatTokensStatic(tokens int) string {
 }
 
 // NewModernTUIModel creates a new modern TUI model
-func NewModernTUIModel(orch *agent.Orchestrator, cfg *config.Config, cmdManager *command.CommandManager, connectedLSPServers []string, connectedMCPServers []string, sensitiveOpManager *audit.SensitiveOperationManager) *ModernTUIModel {
+func NewModernTUIModel(orch *agent.Orchestrator, cfg *config.Config, cmdManager *command.CommandManager, connectedLSPServers []string, connectedMCPServers []string, sensitiveOpManager *audit.SensitiveOperationManager, permissionChecker *tools.UnifiedPermissionChecker) *ModernTUIModel {
 	_ = sensitiveOpManager // Will be used for sensitive operation confirmation
 	// Initialize session manager
 	var sessionManager *session.Manager
@@ -1873,9 +2237,20 @@ func NewModernTUIModel(orch *agent.Orchestrator, cfg *config.Config, cmdManager 
 		mcpStatus:    mcpStatus,
 		lspStatus:    lspStatus,
 	}
+	// Create markdown renderer with dark theme
+	mdRenderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(0), // We handle wrapping ourselves
+	)
+	if err != nil {
+		logger.Warn("ui", "Failed to create markdown renderer: %v", err)
+		mdRenderer = nil
+	}
 	mainArea := &mainAreaModel{
-		messages:    []ChatMessageFinal{},
-		showWelcome: true,
+		messages:        []ChatMessageFinal{},
+		showWelcome:     true,
+		mdRenderer:      mdRenderer,
+		welcomeMsgIndex: int(time.Now().UnixNano()) % 8, // Random initial selection, stays fixed
 	}
 	inputArea := &inputAreaModel{}
 	statusBar := &statusBarModel{
@@ -1896,7 +2271,7 @@ func NewModernTUIModel(orch *agent.Orchestrator, cfg *config.Config, cmdManager 
 		sidebarOpen:     true,
 		activePanel:     0,
 		minSendInterval: 500 * time.Millisecond,
-		streamDebounce:  50 * time.Millisecond,
+		streamDebounce:  150 * time.Millisecond, // Increased from 50ms for better performance
 		mcpStatus:       mcpStatus,
 		lspStatus:       lspStatus,
 		toolStatus:      toolStatus,
@@ -1914,9 +2289,39 @@ func NewModernTUIModel(orch *agent.Orchestrator, cfg *config.Config, cmdManager 
 		// Confirmation dialog
 		confirmationDialog: NewConfirmationDialogModel(),
 
+		// Confirmation synchronization channels
+		confirmRequestChan:  make(chan audit.SensitiveOperation, 1),
+		confirmResponseChan: make(chan audit.ConfirmationResult, 1),
+
+		// Retry event channel (event-driven, no polling)
+		retryEventChan: make(chan retryStatusMsg, 10),
+
 		// Autocomplete
 		autocomplete:    NewAutoCompleter(cmdManager, ""),
 		showAutocomplete: false,
+
+		// Action bar
+		actionBar: NewActionBarModel(),
+
+		// Execution mode - initialize from permission checker or config
+		execMode:          getInitialExecMode(cfg, permissionChecker),
+		permissionChecker: permissionChecker,
+	}
+}
+
+// getInitialExecMode returns the initial execution mode from config or permission checker
+func getInitialExecMode(cfg *config.Config, permissionChecker *tools.UnifiedPermissionChecker) tools.ExecutionMode {
+	if permissionChecker != nil {
+		return permissionChecker.GetMode()
+	}
+	// Fallback to config
+	switch cfg.Permissions.Mode {
+	case "auto":
+		return tools.ModeAuto
+	case "plan":
+		return tools.ModePlan
+	default:
+		return tools.ModeConfirm
 	}
 }
 
@@ -1924,8 +2329,24 @@ func NewModernTUIModel(orch *agent.Orchestrator, cfg *config.Config, cmdManager 
 func (m *ModernTUIModel) SetRetryCallback() {
 	// Get the anthropic client from the orchestrator and set up retry callback
 	if m.orchestrator != nil {
-		// We need to access the underlying AnthropicClient to set the callback
-		// This is done through the LLMClient interface using type assertion
+		// Access the RetryStatus and set callback
+		if rs := m.orchestrator.GetRetryStatus(); rs != nil {
+			rs.SetCallback(func(attempt int, reason string, delay time.Duration) {
+				// Send retry event to UI via channel (non-blocking)
+				select {
+				case m.retryEventChan <- retryStatusMsg{attempt: attempt, reason: reason, delay: delay}:
+				default:
+					// Channel full, skip (shouldn't happen with buffer size 10)
+				}
+			})
+		}
+	}
+}
+
+// pollRetryEvents waits for retry events from the LLM client (event-driven)
+func (m *ModernTUIModel) pollRetryEvents() tea.Cmd {
+	return func() tea.Msg {
+		return <-m.retryEventChan
 	}
 }
 
@@ -1945,6 +2366,19 @@ func (m *ModernTUIModel) ClearRetryStatus() {
 	m.retryAttempt = 0
 	m.retryCountdown = 0
 	m.updateComponents()
+}
+
+// GetConfirmationCallback returns a callback function for sensitive operation confirmation
+// This callback blocks until the user responds via the TUI
+func (m *ModernTUIModel) GetConfirmationCallback() func(op audit.SensitiveOperation) audit.ConfirmationResult {
+	return func(op audit.SensitiveOperation) audit.ConfirmationResult {
+		// Send confirmation request to TUI
+		m.confirmRequestChan <- op
+
+		// Wait for user response (blocking)
+		result := <-m.confirmResponseChan
+		return result
+	}
 }
 
 // Init initializes the model
@@ -1968,8 +2402,15 @@ func (m *ModernTUIModel) Init() tea.Cmd {
 		}
 	})
 
-	// Start polling retry status and enable mouse for scroll
-	return tea.Batch(pollRetryStatus(), func() tea.Msg { return tea.EnableMouseCellMotion() })
+	// Set up retry callback for event-driven notifications
+	m.SetRetryCallback()
+
+	// Start event listeners (confirmation requests + retry events) and enable mouse
+	return tea.Batch(
+		func() tea.Msg { return tea.EnableMouseCellMotion() },
+		m.pollConfirmRequest(),
+		m.pollRetryEvents(),
+	)
 }
 
 // Update handles messages
@@ -1983,22 +2424,28 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateComponents()
 
 	case retryStatusMsg:
-		// Poll retry status from LLM client
-		if m.orchestrator != nil {
-			if rs := m.orchestrator.GetRetryStatus(); rs != nil {
-				active, attempt, reason, delay := rs.Get()
-				if active {
-					m.retryActive = true
-					m.retryAttempt = attempt
-					m.retryStatus = fmt.Sprintf("Retrying (%d/3): %s in %.0fs", attempt, reason, delay.Seconds())
-				} else {
-					m.retryActive = false
-					m.retryStatus = ""
-				}
-				m.updateComponents()
-			}
+		// Event-driven retry status update (no polling needed)
+		m.retryActive = true
+		m.retryAttempt = msg.attempt
+		m.retryStatus = fmt.Sprintf("Retrying (%d/3): %s in %.0fs", msg.attempt, msg.reason, msg.delay.Seconds())
+		m.updateComponents()
+		// Continue listening for more retry events
+		return m, m.pollRetryEvents()
+
+	case confirmRequestMsg:
+		// Show confirmation action bar for sensitive operation
+		// Format operation description for display
+		opDesc := fmt.Sprintf("⚠️ %s: %s", msg.op.ToolName, msg.op.Reason)
+		if len(opDesc) > 60 {
+			opDesc = opDesc[:60] + "..."
 		}
-		return m, pollRetryStatus()
+		m.actionBar = NewSensitiveOpActionBar(opDesc)
+		m.actionBar.SetSize(m.width, 4)
+		m.pendingSensitiveOp = true
+		m.pendingSensitiveOpID = &msg.op
+		m.updateComponents()
+		// Continue polling for future requests
+		return m, m.pollConfirmRequest()
 
 	case tea.KeyMsg:
 		// Handle diff viewer confirmation keys first
@@ -2006,9 +2453,14 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateDiffViewer(msg)
 		}
 
-		// Handle confirmation dialog
-		if m.confirmationDialog != nil && m.confirmationDialog.IsVisible() {
-			return m.updateConfirmationDialog(msg)
+		// Handle sensitive operation confirmation (using actionBar)
+		if m.pendingSensitiveOp && m.actionBar != nil && m.actionBar.IsVisible() {
+			return m.updateSensitiveOpConfirmation(msg)
+		}
+
+		// Handle plan confirmation dialog
+		if m.showPlanConfirm {
+			return m, m.handlePlanConfirmInput(msg)
 		}
 
 		if m.showPalette {
@@ -2150,6 +2602,36 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.helpScrollY = 0
 			return m, nil
 
+		case tea.KeyCtrlJ:
+			// Insert newline (Ctrl+J = Line Feed)
+			// This allows multiline input
+			m.resetESCState()
+			runes := []rune(m.input)
+			m.input = string(runes[:m.cursor]) + "\n" + string(runes[m.cursor:])
+			m.cursor++
+			m.updateComponents()
+			return m, nil
+
+		case tea.KeyTab:
+			// Cycle execution mode: confirm -> auto -> plan -> confirm
+			m.resetESCState()
+			switch m.execMode {
+			case tools.ModeConfirm:
+				m.execMode = tools.ModeAuto
+			case tools.ModeAuto:
+				m.execMode = tools.ModePlan
+			case tools.ModePlan:
+				m.execMode = tools.ModeConfirm
+			default:
+				m.execMode = tools.ModeConfirm
+			}
+			// Update permission checker
+			if m.permissionChecker != nil {
+				m.permissionChecker.SetMode(m.execMode)
+			}
+			m.updateComponents()
+			return m, nil
+
 		case tea.KeyCtrlLeft:
 			// Move cursor left by one word
 			m.resetESCState()
@@ -2164,6 +2646,14 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case tea.KeyEnter:
 			m.resetESCState()
+
+			// Paste protection: ignore Enter if it comes right after a paste operation
+			// This prevents auto-send when pasting content with trailing newline
+			if m.wasPaste && time.Since(m.lastInputTime) < 200*time.Millisecond {
+				m.wasPaste = false // Reset flag
+				return m, nil      // Ignore this Enter
+			}
+			m.wasPaste = false // Reset flag
 
 			// Clean input: remove null bytes and other control characters, then trim
 			// This handles Windows CMD terminal encoding issues
@@ -2298,7 +2788,10 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			if m.sidebar.focusMode == "recent" && m.sidebarOpen {
+			// Navigate input history (only when input is empty, like the hint says)
+			if m.input == "" && len(m.inputHistory) > 0 {
+				m.navigateInputHistory(-1)
+			} else if m.sidebar.focusMode == "recent" && m.sidebarOpen {
 				if m.sidebar.selectedIndex > 0 {
 					m.sidebar.selectedIndex--
 					// Update scroll offset if needed
@@ -2307,9 +2800,6 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.updateComponents()
 				}
-			} else if len(m.inputHistory) > 0 {
-				// Navigate input history
-				m.navigateInputHistory(-1)
 			}
 
 		case tea.KeyDown:
@@ -2319,7 +2809,10 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			if m.sidebar.focusMode == "recent" && m.sidebarOpen {
+			// Navigate input history (only when input is empty, like the hint says)
+			if m.input == "" && len(m.inputHistory) > 0 {
+				m.navigateInputHistory(1)
+			} else if m.sidebar.focusMode == "recent" && m.sidebarOpen {
 				if m.sidebar.selectedIndex < len(m.sidebar.sessions)-1 {
 					m.sidebar.selectedIndex++
 					// Update scroll offset if needed (visible count = 15 or less)
@@ -2329,9 +2822,6 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.updateComponents()
 				}
-			} else if m.inputHistoryIndex < len(m.inputHistory)-1 {
-				// Navigate input history
-				m.navigateInputHistory(1)
 			}
 
 		case tea.KeyPgUp:
@@ -2351,6 +2841,10 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateComponents()
 
 		case tea.KeyRunes:
+			// Track paste operations and input time for paste protection
+			m.lastInputTime = time.Now()
+			m.wasPaste = msg.Paste
+
 			runes := []rune(m.input)
 			m.input = string(runes[:m.cursor]) + string(msg.Runes) + string(runes[m.cursor:])
 			m.cursor += len(msg.Runes)
@@ -2430,6 +2924,27 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateComponents()
 		m.saveSession()
 
+	case AgentEventMsg:
+		// Handle agent events for UI display
+		// Don't clear on complete - that's handled in AgentDoneMsgFinal
+		logger.Debug("ui", "[DEBUG] AgentEventMsg received: type=%s, agent=%s, name=%s", msg.Type, msg.AgentType, msg.AgentName)
+		if msg.Type != "complete" {
+			m.currentAgentInfo = &msg
+			m.agentHistory = append(m.agentHistory, msg)
+			m.mainArea.currentAgent = &msg
+			m.mainArea.agentHistory = m.agentHistory
+			logger.Debug("ui", "[DEBUG] Set mainArea.currentAgent: %+v", m.mainArea.currentAgent)
+
+			// Update parallel task progress
+			if msg.TotalTasks > 0 {
+				m.parallelTasks = msg.TotalTasks
+				m.completedTasks = msg.TasksDone
+			}
+		}
+
+		m.recalculateLayout()
+		m.updateComponents()
+
 	case AgentStreamMsgFinal:
 		if msg.Error != nil {
 			// Handle error during streaming
@@ -2444,6 +2959,7 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = false
 			m.inputArea.loading = false
 			m.currentToolCall = nil // Clear tool state on error
+			m.mainArea.currentToolCall = nil
 			m.recalculateLayout()
 			m.scrollToBottom()
 			m.updateComponents()
@@ -2463,6 +2979,8 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.inputArea.loading = false
 			m.currentToolCall = nil // Clear tool state on complete
 			m.toolCallHistory = nil // Clear tool history
+			m.mainArea.currentToolCall = nil // Sync to mainArea
+			m.mainArea.toolCallHistory = nil
 			m.recalculateLayout()
 			m.scrollToBottom()
 			m.updateComponents()
@@ -2475,6 +2993,68 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Sync to mainArea for display
 				m.mainArea.currentToolCall = msg.ToolCall
 				m.mainArea.toolCallHistory = m.toolCallHistory
+				// Update UI to show tool status bar
+				m.updateComponents()
+			}
+			// Handle agent event status
+			if msg.AgentEvent != nil {
+				logger.Debug("ui", "[DEBUG] AgentStreamMsgFinal.AgentEvent: type=%s, agent=%s, name=%s", msg.AgentEvent.Type, msg.AgentEvent.AgentType, msg.AgentEvent.AgentName)
+				// Only clear agent status on complete when there's no streaming content
+				// This ensures the agent status bar is visible during task execution
+				if msg.AgentEvent.Type != "complete" {
+					m.currentAgentInfo = msg.AgentEvent
+					m.agentHistory = append(m.agentHistory, *msg.AgentEvent)
+					m.mainArea.currentAgent = msg.AgentEvent
+					m.mainArea.agentHistory = m.agentHistory
+					logger.Debug("ui", "[DEBUG] Set mainArea.currentAgent from stream: %+v", m.mainArea.currentAgent)
+
+					// Update parallel task progress
+					if msg.AgentEvent.TotalTasks > 0 {
+						m.parallelTasks = msg.AgentEvent.TotalTasks
+						m.completedTasks = msg.AgentEvent.TasksDone
+					}
+				}
+
+				// Update UI to show agent status
+				m.updateComponents()
+			}
+			// Handle plan event - show confirmation dialog
+			if msg.PlanEvent != nil {
+				logger.Debug("ui", "[DEBUG] AgentStreamMsgFinal.PlanEvent: type=%s", msg.PlanEvent.Type)
+				switch msg.PlanEvent.Type {
+				case "plan_generated":
+					// Remove loading message first to avoid duplicate content
+					m.removeLoadingMessage()
+					m.loading = false
+					m.inputArea.loading = false
+					if msg.PlanEvent.Plan != nil {
+						m.ShowPlanConfirm(msg.PlanEvent.Plan)
+						m.updateComponents()
+					}
+				case "plan_updated":
+					// Plan updated after modification - remove loading message and show new plan
+					m.removeLoadingMessage()
+					m.loading = false
+					m.inputArea.loading = false
+					if msg.PlanEvent.Plan != nil {
+						m.ShowPlanConfirm(msg.PlanEvent.Plan)
+						m.updateComponents()
+					}
+				case "plan_error":
+					// Plan modification error - remove loading and show error
+					m.removeLoadingMessage()
+					m.messages = append(m.messages, ChatMessageFinal{
+						Role:      "error",
+						Content:   "❌ " + msg.PlanEvent.Message,
+						Timestamp: time.Now(),
+					})
+					m.mainArea.messages = m.messages
+					m.loading = false
+					m.inputArea.loading = false
+					m.recalculateLayout()
+					m.scrollToBottom()
+					m.updateComponents()
+				}
 			}
 			// Update streaming content with debouncing to avoid UI freeze
 			// when thinking content is very long
@@ -2487,9 +3067,14 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.messages[i].Role == "loading" {
 						m.messages[i].Content = msg.Content
 						m.messages[i].Thinking = msg.Thinking
+						// Invalidate cached rendering data
+						m.messages[i].WrappedContent = ""
+						m.messages[i].WrappedThinking = ""
 						break
 					}
 				}
+				// CRITICAL: Sync messages to mainArea for View() to render updated content
+				m.mainArea.messages = m.messages
 			}
 			return m, m.readStreamChan(m.streamChan)
 		}
@@ -2498,6 +3083,9 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.removeLoadingMessage()
 		m.loading = false
 		m.inputArea.loading = false
+		// Clear agent status on done
+		m.currentAgentInfo = nil
+		m.mainArea.currentAgent = nil
 		m.updateComponents()
 
 	case AgentErrorMsgFinal:
@@ -2523,7 +3111,7 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, streamTickCmd(m.streamDebounce)
 	}
 
-	return m, nil
+	return m, m.pollConfirmRequest()
 }
 
 // updateComponents syncs state to UI components
@@ -2553,6 +3141,19 @@ func (m *ModernTUIModel) updateComponents() {
 	// Update retry status
 	m.statusBar.retryStatus = m.retryStatus
 	m.statusBar.retryActive = m.retryActive
+	// Update agent status
+	if m.currentAgentInfo != nil {
+		m.statusBar.currentAgent = m.currentAgentInfo.AgentName
+		m.statusBar.agentType = m.currentAgentInfo.AgentType
+	} else if agentInfo := m.orchestrator.GetCurrentAgentInfo(); agentInfo != nil {
+		m.statusBar.currentAgent = agentInfo.Name
+		m.statusBar.agentType = string(agentInfo.Type)
+	} else {
+		m.statusBar.currentAgent = ""
+		m.statusBar.agentType = ""
+	}
+	// Update execution mode
+	m.statusBar.execMode = string(m.execMode)
 }
 
 // View renders the modern layout
@@ -2563,8 +3164,16 @@ func (m *ModernTUIModel) View() string {
 			Render("Initializing ycode...")
 	}
 
+	// Calculate input/action bar height based on plan mode or sensitive op confirmation
+	inputHeight := inputAreaHeight
+	if m.showPlanConfirm && m.actionBar != nil && m.actionBar.IsVisible() {
+		inputHeight = 4 // ActionBar height
+	} else if m.pendingSensitiveOp && m.actionBar != nil && m.actionBar.IsVisible() {
+		inputHeight = 4 // ActionBar height for sensitive op confirmation
+	}
+
 	// Calculate dimensions using constants
-	contentHeight := m.height - titleBarHeight - statusBarHeight - inputAreaHeight
+	contentHeight := m.height - titleBarHeight - statusBarHeight - inputHeight
 	if contentHeight < minContentHeight {
 		contentHeight = minContentHeight
 	}
@@ -2602,8 +3211,15 @@ func (m *ModernTUIModel) View() string {
 		contentView = mainView
 	}
 
-	// Render input area
-	inputView := m.inputArea.View()
+	// Render input area (or action bar during plan/sensitive op confirmation)
+	var inputView string
+	if (m.showPlanConfirm || m.pendingSensitiveOp) && m.actionBar != nil && m.actionBar.IsVisible() {
+		// During plan or sensitive op confirmation, show action bar instead of input area
+		m.actionBar.SetSize(m.width, 4)
+		inputView = m.actionBar.View()
+	} else {
+		inputView = m.inputArea.View()
+	}
 
 	// Render status bar
 	statusView := m.statusBar.View()
@@ -2796,8 +3412,16 @@ func (m *ModernTUIModel) recalculateLayout() {
 		m.totalLines += m.messages[i].RenderedLines
 	}
 
+	// Calculate input/action bar height based on plan mode or sensitive op confirmation
+	inputHeight := inputAreaHeight
+	if m.showPlanConfirm && m.actionBar != nil && m.actionBar.IsVisible() {
+		inputHeight = 4 // ActionBar height
+	} else if m.pendingSensitiveOp && m.actionBar != nil && m.actionBar.IsVisible() {
+		inputHeight = 4 // ActionBar height for sensitive op confirmation
+	}
+
 	// Match the actual content area height
-	contentHeight := m.height - titleBarHeight - statusBarHeight - inputAreaHeight
+	contentHeight := m.height - titleBarHeight - statusBarHeight - inputHeight
 
 	m.visibleLines = contentHeight
 	if m.visibleLines < 1 {
@@ -2957,6 +3581,8 @@ func (m *ModernTUIModel) handleCommand(input string) tea.Cmd {
 			m.loading = true
 			m.inputArea.loading = true
 			m.mainArea.messages = m.messages
+			// Reset stream update timer to ensure first stream event updates UI immediately
+			m.lastStreamUpdate = time.Time{}
 			m.recalculateLayout()
 			m.scrollToBottom()
 			m.updateComponents()
@@ -3013,6 +3639,25 @@ func (m *ModernTUIModel) handleCommand(input string) tea.Cmd {
 							case <-m.cancelCtx.Done():
 							}
 						}
+					}
+				})
+
+				// Set up agent event callback for UI display
+				m.orchestrator.SetAgentCallback(func(event agent.AgentEvent) {
+					select {
+					case m.streamChan <- AgentStreamMsgFinal{
+						AgentEvent: &AgentEventMsg{
+							Type:        string(event.Type),
+							AgentType:   string(event.AgentType),
+							AgentName:   event.AgentName,
+							Description: event.Description,
+							TaskID:      event.TaskID,
+							Progress:    event.Progress,
+							TotalTasks:  event.TotalTasks,
+							TasksDone:   event.TasksDone,
+						},
+					}:
+					case <-m.cancelCtx.Done():
 					}
 				})
 
@@ -3171,6 +3816,8 @@ func (m *ModernTUIModel) sendMessage() tea.Cmd {
 	m.loading = true
 	m.inputArea.loading = true
 	m.mainArea.messages = m.messages
+	// Reset stream update timer to ensure first stream event updates UI immediately
+	m.lastStreamUpdate = time.Time{}
 	m.recalculateLayout()
 	m.scrollToBottom()
 	m.updateComponents()
@@ -3222,7 +3869,98 @@ func (m *ModernTUIModel) sendMessage() tea.Cmd {
 			}
 		})
 
-		err := m.orchestrator.Run(m.cancelCtx, userInput, "")
+		// Set up agent event callback for UI display (agent status bar)
+		m.orchestrator.SetAgentCallback(func(event agent.AgentEvent) {
+			select {
+			case m.streamChan <- AgentStreamMsgFinal{
+				AgentEvent: &AgentEventMsg{
+					Type:        string(event.Type),
+					AgentType:   string(event.AgentType),
+					AgentName:   event.AgentName,
+					Description: event.Description,
+					TaskID:      event.TaskID,
+					Progress:    event.Progress,
+					TotalTasks:  event.TotalTasks,
+					TasksDone:   event.TasksDone,
+				},
+			}:
+			case <-m.cancelCtx.Done():
+			}
+		})
+
+		var err error
+		// Check execution mode - use RunPlanMode for plan mode
+		if m.execMode == tools.ModePlan {
+			err = m.orchestrator.RunPlanMode(m.cancelCtx, userInput, func(event llm.StreamEvent) {
+				// Handle plan events
+				switch event.Type {
+				case "content":
+					fullContent.WriteString(event.Content)
+					select {
+					case m.streamChan <- AgentStreamMsgFinal{Content: fullContent.String(), Thinking: thinkingContent.String(), Done: false}:
+					case <-m.cancelCtx.Done():
+					}
+				case "thinking":
+					thinkingContent.WriteString(event.Content)
+					select {
+					case m.streamChan <- AgentStreamMsgFinal{Content: fullContent.String(), Thinking: thinkingContent.String(), Done: false}:
+					case <-m.cancelCtx.Done():
+					}
+				case "plan_generated":
+					// Plan generated - show confirmation dialog
+					planState := m.orchestrator.GetPlanState()
+					if planState != nil && planState.CurrentPlan != nil {
+						select {
+						case m.streamChan <- AgentStreamMsgFinal{
+							Content: fullContent.String(),
+							Thinking: thinkingContent.String(),
+							Done: false,
+							PlanEvent: &PlanEventMsg{
+								Type:    "plan_generated",
+								Plan:    planState.CurrentPlan,
+								Message: "Please review the execution plan",
+							},
+						}:
+						case <-m.cancelCtx.Done():
+						}
+					}
+				case "plan_updated":
+					// Plan updated after modification - show new plan
+					planState := m.orchestrator.GetPlanState()
+					if planState != nil && planState.CurrentPlan != nil {
+						select {
+						case m.streamChan <- AgentStreamMsgFinal{
+							Content: fullContent.String(),
+							Thinking: thinkingContent.String(),
+							Done: false,
+							PlanEvent: &PlanEventMsg{
+								Type:    "plan_updated",
+								Plan:    planState.CurrentPlan,
+								Message: event.Content, // The message from emitPlanEvent
+							},
+						}:
+						case <-m.cancelCtx.Done():
+						}
+					}
+				case "plan_error":
+					// Plan modification error - show error message
+					select {
+					case m.streamChan <- AgentStreamMsgFinal{
+						Content: fullContent.String(),
+						Thinking: thinkingContent.String(),
+						Done: false,
+						PlanEvent: &PlanEventMsg{
+							Type:    "plan_error",
+							Message: event.Content, // The error message
+						},
+					}:
+					case <-m.cancelCtx.Done():
+					}
+				}
+			})
+		} else {
+			err = m.orchestrator.Run(m.cancelCtx, userInput, "")
+		}
 
 		// Send final message through channel
 		if m.isInterrupted || m.cancelCtx.Err() != nil {
@@ -3541,6 +4279,44 @@ func (m *ModernTUIModel) updateDiffViewer(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateSensitiveOpConfirmation handles sensitive operation confirmation using ActionBar
+func (m *ModernTUIModel) updateSensitiveOpConfirmation(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		// Confirm the operation
+		result := audit.ConfirmationResult{
+			Confirmed: true,
+			Reason:    "User confirmed",
+		}
+		m.actionBar.Hide()
+		m.pendingSensitiveOp = false
+		m.pendingSensitiveOpID = nil
+		// Send result to waiting goroutine
+		select {
+		case m.confirmResponseChan <- result:
+		default:
+		}
+		return m, m.pollConfirmRequest()
+
+	case "n", "N":
+		// Deny the operation (ESC key is intentionally not handled)
+		result := audit.ConfirmationResult{
+			Confirmed: false,
+			Reason:    "Cancelled by user",
+		}
+		m.actionBar.Hide()
+		m.pendingSensitiveOp = false
+		m.pendingSensitiveOpID = nil
+		// Send result to waiting goroutine
+		select {
+		case m.confirmResponseChan <- result:
+		default:
+		}
+		return m, m.pollConfirmRequest()
+	}
+	return m, nil
+}
+
 // updateConfirmationDialog handles confirmation dialog input
 func (m *ModernTUIModel) updateConfirmationDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
@@ -3548,7 +4324,13 @@ func (m *ModernTUIModel) updateConfirmationDialog(msg tea.KeyMsg) (tea.Model, te
 		// Cancel the operation
 		m.confirmationDialog.Hide()
 		m.pendingSensitiveOp = false
-		return m, nil
+		// Send denial result
+		select {
+		case m.confirmResponseChan <- audit.ConfirmationResult{Confirmed: false, Reason: "Cancelled by user"}:
+		default:
+		}
+		// Continue polling for future requests
+		return m, m.pollConfirmRequest()
 
 	case tea.KeyUp:
 		m.confirmationDialog.MoveSelection(-1)
@@ -3574,7 +4356,13 @@ func (m *ModernTUIModel) updateConfirmationDialog(msg tea.KeyMsg) (tea.Model, te
 		m.processConfirmationResult(result)
 		m.confirmationDialog.Hide()
 		m.pendingSensitiveOp = false
-		return m, nil
+		// Send result to waiting goroutine
+		select {
+		case m.confirmResponseChan <- result:
+		default:
+		}
+		// Continue polling for future requests
+		return m, m.pollConfirmRequest()
 
 	case tea.KeyRunes:
 		switch string(msg.Runes) {
@@ -3585,6 +4373,11 @@ func (m *ModernTUIModel) updateConfirmationDialog(msg tea.KeyMsg) (tea.Model, te
 			m.processConfirmationResult(result)
 			m.confirmationDialog.Hide()
 			m.pendingSensitiveOp = false
+			// Send result to waiting goroutine
+			select {
+			case m.confirmResponseChan <- result:
+			default:
+			}
 			return m, nil
 		case "n", "N":
 			// Quick deny
@@ -3593,6 +4386,11 @@ func (m *ModernTUIModel) updateConfirmationDialog(msg tea.KeyMsg) (tea.Model, te
 			m.processConfirmationResult(result)
 			m.confirmationDialog.Hide()
 			m.pendingSensitiveOp = false
+			// Send result to waiting goroutine
+			select {
+			case m.confirmResponseChan <- result:
+			default:
+			}
 			return m, nil
 		}
 	}
@@ -4101,6 +4899,203 @@ func (m *ModernTUIModel) switchToSession(sessionID string) tea.Cmd {
 	m.scrollY = 0
 	m.recalculateLayout()
 	m.updateComponents()
+
+	return nil
+}
+
+// Plan mode confirmation methods
+
+// ShowPlanConfirm shows the plan confirmation with content in main area and action bar
+func (m *ModernTUIModel) ShowPlanConfirm(plan *agent.PlanResult) {
+	m.planState = &PlanConfirmState{
+		plan: plan,
+	}
+	m.showPlanConfirm = true
+
+	// Add plan content as a message in main area
+	m.messages = append(m.messages, ChatMessageFinal{
+		Role:      "plan",
+		Content:   plan.Content,
+		Timestamp: time.Now(),
+	})
+	m.mainArea.messages = m.messages
+	m.showWelcome = false
+	m.mainArea.showWelcome = false
+
+	// Show action bar with plan confirmation options
+	m.actionBar = NewPlanActionBar()
+	m.actionBar.SetSize(m.width, 4)
+
+	// Scroll to bottom to show new message
+	m.recalculateLayout()
+	m.scrollToBottom()
+	m.updateComponents()
+}
+
+// HidePlanConfirm hides the plan confirmation action bar
+func (m *ModernTUIModel) HidePlanConfirm() {
+	m.showPlanConfirm = false
+	m.planState = nil
+	m.actionBar.Hide()
+}
+
+// handlePlanConfirmInput handles keyboard input for plan confirmation
+func (m *ModernTUIModel) handlePlanConfirmInput(msg tea.KeyMsg) tea.Cmd {
+	if m.planState == nil {
+		return nil
+	}
+
+	p := m.planState
+
+	// Input mode for modification request
+	if m.actionBar != nil && m.actionBar.IsInputMode() {
+		switch msg.Type {
+		case tea.KeyEnter:
+			// Paste protection: ignore Enter if it comes right after a paste operation
+			if p.wasPaste && time.Since(p.lastInputTime) < 200*time.Millisecond {
+				p.wasPaste = false
+				return nil
+			}
+			p.wasPaste = false
+
+			// Submit modification request
+			inputText := m.actionBar.GetInputText()
+			if inputText != "" {
+				// Add user's modification request as a visible message
+				m.messages = append(m.messages, ChatMessageFinal{
+					Role:      "user",
+					Content:   "📝 修改建议: " + inputText,
+					Timestamp: time.Now(),
+				})
+				m.mainArea.messages = m.messages
+
+				// Add loading message to show processing state
+				m.messages = append(m.messages, ChatMessageFinal{
+					Role:      "loading",
+					Content:   "",
+					Timestamp: time.Now(),
+				})
+				m.mainArea.messages = m.messages
+				m.loading = true
+				m.inputArea.loading = true
+				// Reset stream update timer to ensure first stream event updates UI immediately
+				m.lastStreamUpdate = time.Time{}
+
+				// Hide action bar but keep plan state for tracking
+				m.showPlanConfirm = false
+				m.actionBar.Hide()
+
+				// Recalculate layout and scroll to bottom
+				m.recalculateLayout()
+				m.scrollToBottom()
+				m.updateComponents()
+
+				// Submit the feedback (streaming will update the loading message)
+				m.orchestrator.SubmitPlanFeedback("modify", inputText)
+
+				// Return command to read stream channel for updates
+				return m.readStreamChan(m.streamChan)
+			}
+		case tea.KeyCtrlJ:
+			// Insert newline (Ctrl+J = Line Feed)
+			m.actionBar.SetInputText(m.actionBar.GetInputText() + "\n")
+		case tea.KeyEsc:
+			m.actionBar.SetInputMode(false)
+			m.actionBar.SetInputText("")
+		case tea.KeyBackspace:
+			// Handle backspace properly for unicode
+			inputText := m.actionBar.GetInputText()
+			runes := []rune(inputText)
+			if len(runes) > 0 {
+				m.actionBar.SetInputText(string(runes[:len(runes)-1]))
+			}
+		default:
+			// Add character to input (supports unicode/Chinese)
+			if len(msg.Runes) > 0 {
+				m.actionBar.SetInputText(m.actionBar.GetInputText() + string(msg.Runes))
+				p.lastInputTime = time.Now()
+				p.wasPaste = msg.Paste
+			}
+		}
+		return nil
+	}
+
+	// Normal navigation mode
+	// Handle global shortcuts first (sidebar toggle, etc.)
+	switch msg.Type {
+	case tea.KeyCtrlB:
+		// Toggle sidebar - works even during plan confirmation
+		m.sidebarOpen = !m.sidebarOpen
+		m.recalculateLayout()
+		m.updateComponents()
+		return nil
+	}
+
+	switch msg.String() {
+	case "y", "Y":
+		// Confirm execution - switch to auto mode for execution
+		// This is necessary because plan mode's permission checker blocks tool execution
+		m.execMode = tools.ModeAuto
+		if m.permissionChecker != nil {
+			m.permissionChecker.SetMode(tools.ModeAuto)
+		}
+
+		// Add user confirmation message to main area
+		m.messages = append(m.messages, ChatMessageFinal{
+			Role:      "user",
+			Content:   "✅ 确认执行方案",
+			Timestamp: time.Now(),
+		})
+		m.mainArea.messages = m.messages
+
+		// Add loading message to show processing state
+		m.messages = append(m.messages, ChatMessageFinal{
+			Role:      "loading",
+			Content:   "",
+			Timestamp: time.Now(),
+		})
+		m.mainArea.messages = m.messages
+		m.loading = true
+		m.inputArea.loading = true
+		// Reset stream update timer to ensure first stream event updates UI immediately
+		m.lastStreamUpdate = time.Time{}
+
+		// Hide action bar and show input area again
+		m.showPlanConfirm = false
+		m.actionBar.Hide()
+
+		// Recalculate layout and scroll to bottom
+		m.recalculateLayout()
+		m.scrollToBottom()
+		m.updateComponents()
+
+		// Submit the feedback (streaming will update the loading message)
+		m.orchestrator.SubmitPlanFeedback("confirm", "")
+
+		// Return command to read stream channel for updates
+		return m.readStreamChan(m.streamChan)
+
+	case "n", "N", "esc":
+		// Cancel - add user cancellation message
+		m.messages = append(m.messages, ChatMessageFinal{
+			Role:      "user",
+			Content:   "❌ 取消方案",
+			Timestamp: time.Now(),
+		})
+		m.mainArea.messages = m.messages
+
+		m.orchestrator.SubmitPlanFeedback("cancel", "")
+		m.HidePlanConfirm()
+		m.recalculateLayout()
+		m.scrollToBottom()
+		m.updateComponents()
+
+	case "m", "M":
+		// Enter modification mode
+		if m.actionBar != nil {
+			m.actionBar.SetInputMode(true)
+		}
+	}
 
 	return nil
 }

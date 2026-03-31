@@ -1,21 +1,21 @@
-# ycode 改进计划
+# ycode Improvement Plan
 
-基于 opencode 的分析，以下是需要改进的关键领域。
+Based on the analysis of opencode, the following are key areas for improvement.
 
-## 1. Agent 系统改进
+## 1. Agent System Improvements
 
-### 1.1 多 Agent 类型
-opencode 实现了多种 Agent 类型:
-- `build`: 默认 Agent，执行工具
-- `plan`: 计划模式，禁止编辑工具
-- `explore`: 快速探索代码库
-- `general`: 通用研究 Agent
-- `compaction`: 上下文压缩 Agent
-- `title`: 标题生成 Agent
-- `summary`: 摘要生成 Agent
+### 1.1 Multi-Agent Types
+opencode implements multiple Agent types:
+- `build`: Default Agent, executes tools
+- `plan`: Plan mode, disabled edit tools
+- `explore`: Fast codebase exploration
+- `general`: General research Agent
+- `compaction`: Context compression Agent
+- `title`: Title generation Agent
+- `summary`: Summary generation Agent
 
-### 1.2 权限系统
-opencode 使用 PermissionNext 实现细粒度权限控制:
+### 1.2 Permission System
+opencode uses PermissionNext for fine-grained permission control:
 ```typescript
 permission: PermissionNext.merge(
   defaults,
@@ -27,26 +27,26 @@ permission: PermissionNext.merge(
 )
 ```
 
-权限类型: `allow`, `deny`, `ask`
+Permission types: `allow`, `deny`, `ask`
 
-### 1.3 Agent 状态管理
-使用 Instance.state() 管理 Agent 配置，支持热重载
+### 1.3 Agent State Management
+Use Instance.state() to manage Agent configuration, support hot reload
 
-## 2. Skill 系统改进
+## 2. Skill System Improvements
 
-### 2.1 Skill 目录结构
-支持多个 Skill 目录:
+### 2.1 Skill Directory Structure
+Support multiple Skill directories:
 - `~/.claude/skills/`
 - `~/.agents/skills/`
-- 项目目录下的 `.claude/` 或 `.agents/`
-- 配置指定的目录
+- `.claude/` or `.agents/` under project directory
+- Configured directories
 
-### 2.2 Skill 权限过滤
-根据当前 Agent 权限过滤可用的 Skills
+### 2.2 Skill Permission Filtering
+Filter available Skills based on current Agent permissions
 
-### 2.3 Skill 发现机制
+### 2.3 Skill Discovery Mechanism
 ```go
-// 异步加载，带缓存
+// Async loading with cache
 type State struct {
     skills   map[string]*Skill
     dirs     []string
@@ -55,9 +55,9 @@ type State struct {
 }
 ```
 
-## 3. MCP 改进
+## 3. MCP Improvements
 
-### 3.1 MCP 客户端状态管理
+### 3.1 MCP Client State Management
 ```go
 type MCPClient struct {
     Name    string
@@ -68,26 +68,26 @@ type MCPClient struct {
 }
 ```
 
-### 3.2 MCP 状态类型
-- `connected`: 已连接
-- `disabled`: 禁用
-- `failed`: 连接失败
-- `needs_auth`: 需要认证
-- `needs_client_registration`: 需要客户端注册
+### 3.2 MCP Status Types
+- `connected`: Connected
+- `disabled`: Disabled
+- `failed`: Connection failed
+- `needs_auth`: Requires authentication
+- `needs_client_registration`: Requires client registration
 
-### 3.3 OAuth 支持
-- 支持远程 MCP 服务器的 OAuth 认证
-- 浏览器授权流程
-- Token 存储和刷新
+### 3.3 OAuth Support
+- Support OAuth authentication for remote MCP servers
+- Browser authorization flow
+- Token storage and refresh
 
-### 3.4 MCP 资源管理
-- MCP Prompts: 可作为命令调用
-- MCP Resources: 可读取的资源
-- Tool 转换: MCP Tool -> ycode Tool
+### 3.4 MCP Resource Management
+- MCP Prompts: Can be invoked as commands
+- MCP Resources: Readable resources
+- Tool conversion: MCP Tool -> ycode Tool
 
-## 4. LSP 改进
+## 4. LSP Improvements
 
-### 4.1 LSP 服务器管理
+### 4.1 LSP Server Management
 ```go
 type LSPServer struct {
     Name      string
@@ -98,16 +98,16 @@ type LSPServer struct {
 }
 ```
 
-### 4.2 LSP 功能
-- 诊断 (Diagnostics)
-- 悬停信息 (Hover)
-- 跳转定义 (Goto Definition)
-- 查找引用 (Find References)
-- 代码补全 (Completion)
+### 4.2 LSP Features
+- Diagnostics
+- Hover information
+- Goto Definition
+- Find References
+- Code Completion
 
-## 5. Plugin 系统改进
+## 5. Plugin System Improvements
 
-### 5.1 Hook 系统
+### 5.1 Hook System
 ```go
 type PluginHook interface {
     OnChatStart(ctx context.Context, session *Session)
@@ -117,110 +117,306 @@ type PluginHook interface {
 }
 ```
 
-### 5.2 Plugin 生命周期
-1. Discovery: 发现插件
-2. Load: 加载插件
-3. Init: 初始化插件
-4. Shutdown: 关闭插件
+### 5.2 Plugin Lifecycle
+1. Discovery: Discover plugins
+2. Load: Load plugins
+3. Init: Initialize plugins
+4. Shutdown: Shutdown plugins
 
-### 5.3 内置插件
+### 5.3 Built-in Plugins
 - Codex Auth Plugin
 - Copilot Auth Plugin
 - GitLab Auth Plugin
 
-## 6. Command 系统改进
+## 6. Command System Improvements
 
-### 6.1 命令来源
-- Built-in: 内置命令
-- MCP: MCP Prompts 作为命令
-- Skill: Skills 作为命令
-- Config: 配置文件中的命令
+### 6.1 Command Sources
+- Built-in: Built-in commands
+- MCP: MCP Prompts as commands
+- Skill: Skills as commands
+- Config: Commands from config file
 
-### 6.2 命令模板变量
-- `$1, $2, ...`: 位置参数
-- `$ARGUMENTS`: 所有参数
-- 环境变量 `$ENV_VAR`
+### 6.2 Command Template Variables
+- `$1, $2, ...`: Positional arguments
+- `$ARGUMENTS`: All arguments
+- Environment variables `$ENV_VAR`
 
-### 6.3 命令属性
+### 6.3 Command Attributes
 ```go
 type Command struct {
     Name        string
     Description string
-    Agent       string      // 使用的 Agent
-    Model       string      // 使用的模型
+    Agent       string      // Agent to use
+    Model       string      // Model to use
     Source      string      // "command", "mcp", "skill"
-    Subtask     bool        // 是否作为子任务
-    Hints       []string    // 参数提示
-    Template    string      // 模板内容
+    Subtask     bool        // Whether to run as subtask
+    Hints       []string    // Argument hints
+    Template    string      // Template content
 }
 ```
 
-## 7. UI 改进
+## 7. UI Improvements
 
-### 7.1 改进区域
-- 流式文本显示
-- 命令面板 (Cmd/Ctrl+P)
-- 更好的错误显示
-- 键盘快捷键
-- MCP/LSP 状态指示器
-- Token 使用统计
+### 7.1 Improvement Areas
+- Streaming text display
+- Command palette (Cmd/Ctrl+P)
+- Better error display
+- Keyboard shortcuts
+- MCP/LSP status indicators
+- Token usage statistics
 
-### 7.2 状态栏信息
-- 模型信息
-- Token 使用情况
-- MCP 服务器状态
-- LSP 服务器状态
-- Agent 模式
+### 7.2 Status Bar Information
+- Model information
+- Token usage
+- MCP server status
+- LSP server status
+- Agent mode
 
-## 8. 实现优先级
+## 8. Implementation Priority
 
-### Phase 1: 核心架构
-1. ✅ Agent 系统多类型支持
-2. ✅ Permission 系统
-3. ✅ Command 系统改进
+### Phase 1: Core Architecture
+1. ✅ Agent system multi-type support
+2. ✅ Permission system
+3. ✅ Command system improvements
 
-### Phase 2: 集成
-1. MCP 客户端完整实现
-2. LSP 客户端完整实现
-3. Skill 系统增强
+### Phase 2: Integration
+1. MCP client complete implementation
+2. LSP client complete implementation
+3. Skill system enhancement
 
-### Phase 3: 高级功能
-1. Plugin Hook 系统
-2. UI 增强
-3. OAuth 支持
+### Phase 3: Advanced Features
+1. ✅ Plugin Hook system - Implemented in `internal/plugin/hooks.go` and `internal/plugin/manager.go`
+2. ✅ UI enhancement - Implemented in `internal/ui/` directory:
+   - `statusbar.go` - Status bar with model info, token usage, MCP/LSP status, agent mode
+   - `command_palette.go` - Command palette (Cmd/Ctrl+P) for quick command execution
+   - `streaming.go` - Streaming text display for real-time AI responses
+   - `error_display.go` - Better error display with severity levels and stack traces
+   - `shortcuts.go` - Keyboard shortcuts management
+   - `tokens.go` - Token usage statistics display
+   - `components.go` - UI components manager for integration
+3. ✅ OAuth support - Implemented in `internal/mcp/oauth.go`:
+   - OAuth flow for remote MCP servers
+   - Browser authorization flow
+   - Token storage and refresh
+   - Multiple provider support (GitHub, GitLab, Google, Microsoft)
 
-## 9. 文件结构建议
+## 9. File Structure
 
 ```
 internal/
 ├── agent/
-│   ├── loop.go           # TAOR 循环
-│   ├── agent.go         # Agent 定义
-│   ├── permission.go    # 权限系统
-│   └── compact.go       # 压缩 Agent
+│   ├── loop.go           # TAOR loop
+│   ├── agent.go         # Agent definition
+│   ├── permission.go    # Permission system
+│   └── compact.go       # Compression Agent
 ├── command/
-│   ├── command.go       # Command 定义
-│   ├── manager.go       # Command 管理器
-│   ├── builtin.go       # 内置命令
-│   └── template/        # 命令模板
+│   ├── command.go       # Command definition
+│   ├── manager.go       # Command manager
+│   ├── builtin.go       # Built-in commands
+│   └── template/        # Command template
 ├── mcp/
-│   ├── client.go        # MCP 客户端
-│   ├── oauth.go        # OAuth 支持
-│   └── tools.go        # Tool 转换
+│   ├── client.go        # MCP client
+│   ├── oauth.go         # OAuth support ✅
+│   └── tools.go         # Tool conversion
 ├── lsp/
-│   ├── client.go        # LSP 客户端
-│   ├── diagnostics.go  # 诊断
-│   └── completions.go   # 补全
+│   ├── client.go        # LSP client
+│   ├── diagnostics.go   # Diagnostics
+│   └── completions.go   # Completion
 ├── skill/
-│   ├── skill.go        # Skill 定义
-│   ├── discovery.go    # Skill 发现
-│   └── permission.go   # Skill 权限
+│   ├── skill.go        # Skill definition
+│   ├── discovery.go    # Skill discovery
+│   └── permission.go   # Skill permission
 ├── plugin/
-│   ├── plugin.go       # Plugin 接口
-│   ├── hooks.go        # Hook 定义
-│   └── manager.go      # Plugin 管理器
+│   ├── plugin.go       # Plugin interface
+│   ├── hooks.go        # Hook definition ✅
+│   └── manager.go      # Plugin manager ✅
 └── ui/
-    ├── tui.go          # TUI 主程序
-    ├── component/       # UI 组件
-    └── styles/         # 样式
+    ├── tui.go          # TUI main program
+    ├── statusbar.go    # Status bar ✅
+    ├── command_palette.go  # Command palette ✅
+    ├── streaming.go    # Streaming text ✅
+    ├── error_display.go    # Error display ✅
+    ├── shortcuts.go    # Keyboard shortcuts ✅
+    ├── tokens.go       # Token statistics ✅
+    ├── components.go   # Component manager ✅
+    └── styles/         # Styles
 ```
+
+## 10. Phase 3 Implementation Summary
+
+### Plugin Hook System (Already Complete)
+The plugin hook system was already implemented in Phase 1 and is fully functional:
+- **File**: `internal/plugin/hooks.go` - Defines all available hooks
+- **File**: `internal/plugin/manager.go` - Hook registration and execution
+- **Hooks Available**:
+  - `on_chat_start` - Triggered when chat session begins
+  - `on_chat_complete` - Triggered when chat response is generated
+  - `on_tool_execute` - Triggered before tool execution
+  - `on_tool_complete` - Triggered after tool execution
+  - `on_error` - Triggered when error occurs
+  - `on_agent_switch` - Triggered when switching agents
+  - `on_file_read` - Triggered after reading file
+  - `on_file_write` - Triggered before writing file
+  - `on_command_execute` - Triggered before shell command
+  - `on_startup` - Triggered on app startup
+  - `on_shutdown` - Triggered on app shutdown
+
+### UI Enhancement (New)
+Created comprehensive UI components in `internal/ui/`:
+1. **Status Bar** (`statusbar.go`)
+   - Model information display
+   - Token usage statistics (input/output/total)
+   - MCP server status indicators (connected/disabled/failed)
+   - LSP server status indicators
+   - Agent mode display
+   
+2. **Command Palette** (`command_palette.go`)
+   - Quick command execution via Cmd/Ctrl+P
+   - Search/filter commands
+   - Built-in commands integration
+   - Keyboard navigation
+   
+3. **Streaming Text Display** (`streaming.go`)
+   - Real-time streaming of AI responses
+   - Cursor animation during streaming
+   - Speed tracking and display
+   - Line-by-line streaming support
+   
+4. **Error Display** (`error_display.go`)
+   - Severity levels (info/warning/error/fatal)
+   - Stack trace display
+   - Error code classification
+   - Timestamp display
+   
+5. **Keyboard Shortcuts** (`shortcuts.go`)
+   - Global shortcut registry
+   - Context-aware shortcuts
+   - Shortcut management (register/unregister)
+   - Key combination parsing
+   
+6. **Token Statistics** (`tokens.go`)
+   - Session token tracking
+   - Total usage display
+   - Percentage-based progress bar
+   - Cost estimation
+   
+7. **Components Manager** (`components.go`)
+   - Centralized UI component management
+   - Integration of all UI elements
+   - Status bar updates
+   - Streaming control
+
+### OAuth Support (New)
+Created OAuth implementation in `internal/mcp/oauth.go`:
+- **OAuth Flow**: Full OAuth 2.0 authorization flow
+- **Browser Launch**: Automatic browser launch for authorization
+- **Token Storage**: Secure token storage with file permissions
+- **Token Refresh**: Automatic token refresh when expired
+- **Multiple Providers**: Support for GitHub, GitLab, Google, Microsoft
+- **Local Server**: Temporary local server for OAuth callback
+- **MCP Integration**: Seamless integration with MCP client
+
+## 11. Usage Examples
+
+### Using OAuth for MCP
+```go
+// Create OAuth manager
+oauthMgr := mcp.NewOAuthManager()
+
+// Configure provider
+provider := mcp.ProviderGitHub
+config := mcp.OAuthConfig{
+    Provider:     provider,
+    ClientID:     "your-client-id",
+    ClientSecret: "your-client-secret",
+    RedirectURL:  "http://localhost:8080/callback",
+    Scopes:       []string{"repo", "user"},
+}
+
+// Start OAuth flow
+token, err := oauthMgr.StartFlow(ctx, config)
+
+// Use token with MCP client
+client.SetOAuthToken(token)
+```
+
+### Using Status Bar
+```go
+// Create status bar
+sb := ui.NewStatusBar()
+
+// Set model info
+sb.SetModel("claude-sonnet-4-20250514")
+
+// Set token usage
+sb.SetTokens(1500, 800)
+
+// Set MCP status
+sb.SetMCPStatus(map[string]ui.ServerStatus{
+    "github": ui.StatusConnected,
+    "gitlab": ui.StatusFailed,
+})
+
+// Set LSP status
+sb.SetLSPStatus(map[string]ui.ServerStatus{
+    "gopls": ui.StatusConnected,
+})
+```
+
+### Using Command Palette
+```go
+// Create command palette
+cp := ui.NewCommandPalette()
+
+// Register commands
+cp.RegisterCommand("exit", "Exit application", func() { app.Quit() })
+cp.RegisterCommand("help", "Show help", func() { app.ShowHelp() })
+
+// Open command palette (Cmd/Ctrl+P)
+cp.Open()
+```
+
+### Using Streaming Display
+```go
+// Create streaming display
+sd := ui.NewStreamingDisplay()
+
+// Start streaming
+sd.Start()
+
+// Add content chunks
+sd.AddChunk("Hello, ")
+sd.AddChunk("world!")
+
+// Stop streaming
+sd.Stop()
+```
+
+## 12. Testing
+
+All Phase 3 components should be tested:
+
+```bash
+# Test OAuth implementation
+go test ./internal/mcp/oauth_test.go
+
+# Test UI components
+go test ./internal/ui/...
+
+# Test integration
+go test ./internal/...
+```
+
+## 13. Next Steps
+
+Phase 3 is now **COMPLETE**. All advanced features have been implemented:
+- ✅ Plugin Hook System
+- ✅ UI Enhancement
+- ✅ OAuth Support
+
+Future improvements can focus on:
+- Performance optimization
+- Additional OAuth providers
+- Advanced UI features (split panes, multi-tab)
+- Plugin marketplace
+- Skill templates

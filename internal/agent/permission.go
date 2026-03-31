@@ -389,45 +389,6 @@ func reviewerPermissions() *AgentPermissions {
 	return p
 }
 
-// executorPermissions returns permissions for command execution agents
-// These agents can execute commands but with restrictions
-func executorPermissions() *AgentPermissions {
-	p := NewAgentPermissions("normal")
-	p.AddRules(
-		// Allow all read operations
-		NewPermissionRule("read", "allow", "*"),
-		NewPermissionRule("glob", "allow", "*"),
-		NewPermissionRule("grep", "allow", "*"),
-		NewPermissionRule("ast", "allow", "*"),
-		// Allow git operations
-		NewPermissionRule("git", "allow", "*"),
-		// Allow write/edit for common code files
-		NewPermissionRule("write", "allow", "*.go"),
-		NewPermissionRule("write", "allow", "*.js"),
-		NewPermissionRule("write", "allow", "*.ts"),
-		NewPermissionRule("write", "allow", "*.py"),
-		NewPermissionRule("write", "allow", "*.md"),
-		NewPermissionRule("write", "allow", "*.txt"),
-		NewPermissionRule("write", "allow", "*.json"),
-		NewPermissionRule("write", "allow", "*.yaml"),
-		NewPermissionRule("write", "allow", "*.yml"),
-		// Deny write operations to sensitive files
-		NewPermissionRule("write", "deny", "*.env"),
-		NewPermissionRule("write", "deny", "*.secret"),
-		NewPermissionRule("write", "deny", "*.key"),
-		NewPermissionRule("write", "deny", "*.pem"),
-		// Deny dangerous bash commands
-		NewPermissionRule("bash", "deny", "rm -rf /*"),
-		NewPermissionRule("bash", "deny", "sudo *"),
-		NewPermissionRule("bash", "deny", "chmod 777 *"),
-		// Ask for other operations
-		NewPermissionRule("write", "ask", "*"),
-		NewPermissionRule("edit", "ask", "*"),
-		NewPermissionRule("bash", "ask", "*"),
-	)
-	return p
-}
-
 // normalPermissions returns default normal permissions
 func normalPermissions() *AgentPermissions {
 	p := NewAgentPermissions("normal")
@@ -617,6 +578,38 @@ func writerPermissions() *AgentPermissions {
 		NewPermissionRule("write", "deny", "*.java"),
 		NewPermissionRule("write", "deny", "*.rs"),
 		// Deny bash execution
+		NewPermissionRule("bash", "deny", "*"),
+	)
+	return p
+}
+
+// ReadOnlyPermissions returns permissions for plan mode
+// Allows only read-only tools for research and exploration
+func ReadOnlyPermissions() *AgentPermissions {
+	p := NewAgentPermissions("strict")
+	p.AddRules(
+		// Allow all read operations
+		NewPermissionRule("read", "allow", "*"),
+		NewPermissionRule("glob", "allow", "*"),
+		NewPermissionRule("grep", "allow", "*"),
+		NewPermissionRule("ast", "allow", "*"),
+		// Allow LSP tools (read-only)
+		NewPermissionRule("lsp_hover", "allow", "*"),
+		NewPermissionRule("lsp_definition", "allow", "*"),
+		NewPermissionRule("lsp_references", "allow", "*"),
+		NewPermissionRule("lsp_symbols", "allow", "*"),
+		// Allow web tools for research
+		NewPermissionRule("web_search", "allow", "*"),
+		NewPermissionRule("web_fetch", "allow", "*"),
+		// Allow git read operations
+		NewPermissionRule("git_status", "allow", "*"),
+		NewPermissionRule("git_log", "allow", "*"),
+		NewPermissionRule("git_diff", "allow", "*"),
+		NewPermissionRule("git_show", "allow", "*"),
+		NewPermissionRule("git_branch", "allow", "*"),
+		// Deny all write operations
+		NewPermissionRule("write", "deny", "*"),
+		NewPermissionRule("edit", "deny", "*"),
 		NewPermissionRule("bash", "deny", "*"),
 	)
 	return p

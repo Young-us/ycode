@@ -119,10 +119,12 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]interface{}
 		}, nil
 	}
 
-	// Check if file exists (for reporting)
+	// Check if file exists and read original content for diff
+	var originalContent string
 	fileExists := false
-	if _, err := os.Stat(absPath); err == nil {
+	if existingContent, err := os.ReadFile(absPath); err == nil {
 		fileExists = true
+		originalContent = string(existingContent)
 	}
 
 	// Write file
@@ -133,11 +135,15 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]interface{}
 		}, nil
 	}
 
-	// Report result
+	// Report result with diff if overwriting existing file
 	if fileExists {
+		// Compute diff for overwritten file
+		diff := ComputeDiff(originalContent, content)
 		return &ToolResult{
-			Content: fmt.Sprintf("File '%s' overwritten successfully", path),
-			IsError: false,
+			Content:  fmt.Sprintf("File '%s' overwritten successfully", path),
+			IsError:  false,
+			Diff:     diff,
+			FilePath: path,
 		}, nil
 	}
 

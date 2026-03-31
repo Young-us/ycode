@@ -95,6 +95,9 @@ func (t *EditFileTool) Execute(ctx context.Context, args map[string]interface{})
 		}, nil
 	}
 
+	// Save original content for diff
+	originalContent := string(content)
+
 	// Parse SEARCH/REPLACE blocks
 	blocks, err := t.parseEditBlocks(edit)
 	if err != nil {
@@ -105,7 +108,7 @@ func (t *EditFileTool) Execute(ctx context.Context, args map[string]interface{})
 	}
 
 	// Apply edits
-	result := string(content)
+	result := originalContent
 	appliedCount := 0
 
 	for _, block := range blocks {
@@ -128,9 +131,14 @@ func (t *EditFileTool) Execute(ctx context.Context, args map[string]interface{})
 		}, nil
 	}
 
+	// Compute diff for UI display
+	diff := ComputeDiff(originalContent, result)
+
 	return &ToolResult{
-		Content: fmt.Sprintf("Successfully applied %d edit(s) to '%s'", appliedCount, path),
-		IsError: false,
+		Content:  fmt.Sprintf("Successfully applied %d edit(s) to '%s'", appliedCount, path),
+		IsError:  false,
+		Diff:     diff,
+		FilePath: path,
 	}, nil
 }
 

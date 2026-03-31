@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -18,6 +19,7 @@ type Config struct {
 	MCP         MCPConfig         `mapstructure:"mcp"`
 	LSP         LSPConfig         `mapstructure:"lsp"`
 	Plugins     PluginsConfig     `mapstructure:"plugins"`
+	Sandbox     SandboxConfig     `mapstructure:"sandbox"`
 }
 
 type LLMConfig struct {
@@ -54,8 +56,11 @@ type ToolsConfig struct {
 }
 
 type BashConfig struct {
-	Timeout        string   `mapstructure:"timeout"`
-	DeniedCommands []string `mapstructure:"denied_commands"`
+	Timeout          string   `mapstructure:"timeout"`
+	DeniedCommands   []string `mapstructure:"denied_commands"`
+	MaxMemoryMB      int      `mapstructure:"max_memory_mb"`       // Maximum memory limit in MB (0 = unlimited)
+	AllowNetwork     bool     `mapstructure:"allow_network"`        // Allow network access
+	ProtectedEnvVars []string `mapstructure:"protected_env_vars"`   // Environment variables to protect
 }
 
 type FilesConfig struct {
@@ -119,6 +124,19 @@ type LSPServer struct {
 	Command string   `mapstructure:"command"`
 	Args    []string `mapstructure:"args"`
 	Enabled bool     `mapstructure:"enabled"`
+}
+
+// SandboxConfig represents sandbox configuration
+type SandboxConfig struct {
+	Enabled           bool          `mapstructure:"enabled"`
+	Timeout           time.Duration `mapstructure:"timeout"`
+	MaxMemoryMB       int           `mapstructure:"max_memory_mb"`
+	MaxFileSizeMB     int           `mapstructure:"max_file_size_mb"`
+	AllowNetwork      bool          `mapstructure:"allow_network"`
+	AllowWrite        bool          `mapstructure:"allow_write"`
+	AllowedPaths      []string      `mapstructure:"allowed_paths"`
+	BlockedCommands   []string      `mapstructure:"blocked_commands"`
+	RestrictedEnvVars []string      `mapstructure:"restricted_env_vars"`
 }
 
 // Load loads configuration from files and environment
@@ -190,6 +208,10 @@ func setDefaults() {
 
 	// Tools defaults
 	viper.SetDefault("tools.bash.timeout", "30s")
+	viper.SetDefault("tools.bash.max_memory_mb", 512)
+	viper.SetDefault("tools.bash.allow_network", true)
+	viper.SetDefault("tools.bash.protected_env_vars", []string{"API_KEY", "SECRET", "PASSWORD", "TOKEN", "PRIVATE_KEY", "CREDENTIAL"})
+	viper.SetDefault("tools.bash.denied_commands", []string{"rm -rf /", "mkfs", "dd if=/dev/zero", ":(){ :|:& };:", "chmod -R 777 /"})
 	viper.SetDefault("tools.files.max_size", "10MB")
 	viper.SetDefault("tools.files.max_lines", 1000)
 	viper.SetDefault("tools.files.encoding", "utf-8")
@@ -204,6 +226,37 @@ func setDefaults() {
 
 	// Logging defaults
 	viper.SetDefault("logging.level", "info")
+
+	// Sandbox defaults
+	viper.SetDefault("sandbox.enabled", true)
+	viper.SetDefault("sandbox.timeout", "30s")
+	viper.SetDefault("sandbox.max_memory_mb", 512)
+	viper.SetDefault("sandbox.max_file_size_mb", 100)
+	viper.SetDefault("sandbox.allow_network", false)
+	viper.SetDefault("sandbox.allow_write", true)
+	viper.SetDefault("sandbox.allowed_paths", []string{})
+	viper.SetDefault("sandbox.blocked_commands", []string{
+		"rm -rf /",
+		"rm -rf /*",
+		"mkfs",
+		"dd if=/dev/zero",
+		"dd if=/dev/urandom",
+		":(){ :|:& };:",
+		"chmod -R 777 /",
+		"sudo rm",
+		"sudo dd",
+	})
+	viper.SetDefault("sandbox.restricted_env_vars", []string{
+		"API_KEY",
+		"SECRET",
+		"PASSWORD",
+		"TOKEN",
+		"PRIVATE_KEY",
+		"CREDENTIAL",
+		"AWS_ACCESS_KEY_ID",
+		"AWS_SECRET_ACCESS_KEY",
+		"ANTHROPIC_API_KEY",
+	})
 }
 
 func applyEnvOverrides(config *Config) {
@@ -215,5 +268,10 @@ func applyEnvOverrides(config *Config) {
 	// Model from environment
 	if model := os.Getenv("YCODE_MODEL"); model != "" {
 		config.LLM.Model = model
+	}
+
+	// Sandbox enabled/disabled from environment
+	if sandboxEnabled := os.Getenv("YCODE_SANDBOX_ENABLED"); sandboxEnabled != "" {
+		config.Sandbox.Enabled = sandboxEnabled == "true" || sandboxEnabled == "1"
 	}
 }
