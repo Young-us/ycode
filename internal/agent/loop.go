@@ -386,6 +386,14 @@ func (l *Loop) Run(ctx context.Context, userInput string, callback func(event ll
 					// Append diff info for file edit operations
 					resultContent += tools.FormatDiffForMessage(r.result.FilePath, r.result.Diff)
 				}
+				// Send tool_result event to UI
+				if callback != nil && r.result.Diff != nil && r.result.FilePath != "" {
+					callback(llm.StreamEvent{
+						Type:     "tool_result",
+						Content:  tools.FormatDiffForMessage(r.result.FilePath, r.result.Diff),
+						ToolName: r.toolCall.Name,
+					})
+				}
 
 				l.History = append(l.History, llm.Message{
 					Role:    "user",
@@ -430,6 +438,15 @@ func (l *Loop) Run(ctx context.Context, userInput string, callback func(event ll
 				} else if result.Diff != nil && result.FilePath != "" {
 					// Append diff info for file edit operations
 					resultContent += tools.FormatDiffForMessage(result.FilePath, result.Diff)
+				}
+
+				// Send tool_result event to UI only for file modifications with diff
+				if callback != nil && result.Diff != nil && result.FilePath != "" {
+					callback(llm.StreamEvent{
+						Type:     "tool_result",
+						Content:  tools.FormatDiffForMessage(result.FilePath, result.Diff),
+						ToolName: toolCall.Name,
+					})
 				}
 
 				l.History = append(l.History, llm.Message{

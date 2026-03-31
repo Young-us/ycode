@@ -1204,6 +1204,24 @@ func (m *mainAreaModel) renderMessage(msg *ChatMessageFinal, maxWidth int) strin
 		}
 		return result.String()
 
+
+	case "system":
+		// System message for tool results (diff display)
+		// Render with markdown for proper diff formatting
+		systemStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("243")) // Gray
+
+		// Check if content contains diff and render with markdown
+		if strings.Contains(msg.Content, "```diff") && m.mdRenderer != nil {
+			rendered, err := m.mdRenderer.Render(msg.Content)
+			if err == nil {
+				wrappedContent = wrapMarkdownContent(rendered, maxWidth-4)
+				msg.WrappedContent = wrappedContent
+				msg.WrapWidth = maxWidth
+			}
+		}
+
+		return systemStyle.Render("📋 ") + wrappedContent + "\n"
 	default:
 		return "  " + wrappedContent
 	}
@@ -2833,6 +2851,11 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						// It's a file path, send as regular message
 						return m, m.sendMessage()
 					}
+					// Check if it looks like a file reference (has file extension)
+					if strings.Contains(remaining, ".") && !m.cmdManager.HasCommand(remaining) {
+						// Likely a file reference like /AGENTS.md or /file.txt
+						return m, m.sendMessage()
+					}
 					return m, m.handleCommand(m.input)
 				}
 
@@ -3067,6 +3090,8 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Error != nil {
 			// Handle error during streaming
 			m.removeLoadingMessage()
+			// Clear retry status on error
+			m.ClearRetryStatus()
 			errorContent := m.formatError(msg.Error)
 			m.messages = append(m.messages, ChatMessageFinal{
 				Role:      "error",
@@ -3084,6 +3109,8 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if msg.Done {
 			// Streaming complete
 			m.removeLoadingMessage()
+			// Clear retry status on successful completion
+			m.ClearRetryStatus()
 			if msg.Content != "" {
 				m.messages = append(m.messages, ChatMessageFinal{
 					Role:      "assistant",
@@ -3117,6 +3144,24 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mainArea.toolCallHistory = m.toolCallHistory
 				// Update UI to show tool status bar
 				m.updateComponents()
+			}
+			// Handle tool result - display diff info
+			if msg.ToolResult != nil {
+				// Add tool result as a system message for visibility
+				resultContent := msg.ToolResult.Content
+				if resultContent != "" {
+					// Format tool result for display
+					displayContent := fmt.Sprintf("📝 %s\n%s", msg.ToolResult.Name, resultContent)
+					m.messages = append(m.messages, ChatMessageFinal{
+						Role:      "system",
+						Content:   displayContent,
+						Timestamp: time.Now(),
+					})
+					m.mainArea.messages = m.messages
+					m.recalculateLayout()
+					m.scrollToBottom()
+					m.updateComponents()
+				}
 			}
 			// Handle agent event status
 			if msg.AgentEvent != nil {
@@ -3765,6 +3810,21 @@ func (m *ModernTUIModel) handleCommand(input string) tea.Cmd {
 							case <-m.cancelCtx.Done():
 							}
 						}
+						case "tool_result":
+							// Send tool result to UI
+							select {
+							case m.streamChan <- AgentStreamMsgFinal{
+								Content:  fullContent.String(),
+								Thinking: thinkingContent.String(),
+								Done:     false,
+								ToolResult: &ToolResultInfo{
+									Name:    event.ToolName,
+									Success: true,
+									Content: event.Content,
+								},
+							}:
+							case <-m.cancelCtx.Done():
+							}
 					}
 				})
 
@@ -3991,6 +4051,21 @@ func (m *ModernTUIModel) sendMessage() tea.Cmd {
 					}:
 					case <-m.cancelCtx.Done():
 					}
+				}
+			case "tool_result":
+				// Send tool result to UI
+				select {
+				case m.streamChan <- AgentStreamMsgFinal{
+					Content:  fullContent.String(),
+					Thinking: thinkingContent.String(),
+					Done:     false,
+					ToolResult: &ToolResultInfo{
+						Name:    event.ToolName,
+						Success: true,
+						Content: event.Content,
+					},
+				}:
+				case <-m.cancelCtx.Done():
 				}
 			}
 		})

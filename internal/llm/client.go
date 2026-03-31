@@ -96,13 +96,15 @@ type Usage struct {
 
 // StreamEvent represents a streaming event
 type StreamEvent struct {
-	Type     string    `json:"type"` // "content", "thinking", "tool_call", "done", "usage", "retry"
+	Type     string    `json:"type"` // "content", "thinking", "tool_call", "tool_result", "done", "usage", "retry"
 	Content  string    `json:"content,omitempty"`
 	ToolCall *ToolCall `json:"tool_call,omitempty"`
 	Usage    *Usage    `json:"usage,omitempty"` // Token usage (sent at end of stream)
 	// Retry information
 	RetryAttempt int    `json:"retry_attempt,omitempty"` // Current retry attempt (1-indexed)
 	RetryReason  string `json:"retry_reason,omitempty"`  // Reason for retry
+	// Tool result information
+	ToolName string `json:"tool_name,omitempty"` // Tool name for tool_result events
 }
 
 // Client is the interface for LLM clients
