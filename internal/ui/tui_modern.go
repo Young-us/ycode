@@ -214,6 +214,9 @@ type ModernTUIModel struct {
 	// Paste protection - prevent auto-send after paste
 	lastInputTime  time.Time // Last time a character was typed/pasted
 	wasPaste       bool      // Last KeyRunes was a paste operation
+	pasteEndTime   time.Time // When the last paste batch ended (for extended protection)
+	pasteCharCount int       // Number of characters in last paste (to detect large pastes)
+	rapidInputCount int      // Count of rapid consecutive inputs (for speed-based paste detection)
 
 	// Streaming support
 	streamChan       chan AgentStreamMsgFinal
@@ -1378,11 +1381,13 @@ func (m *mainAreaModel) GetSize() (int, int) { return m.width, m.height }
 
 // Input area component
 type inputAreaModel struct {
-	width   int
-	height  int
-	input   string
-	cursor  int
-	loading bool
+	width      int
+	height     int
+	input      string
+	cursor     int
+	loading    bool
+	scrollY    int // Scroll offset for multi-line input
+	maxScrollY int // Maximum scroll offset
 }
 
 func (i *inputAreaModel) Init() tea.Cmd                           { return nil }
@@ -1402,10 +1407,16 @@ func (i *inputAreaModel) View() string {
 	var inputLines []string
 	var current strings.Builder
 	for _, r := range runes {
-		current.WriteRune(r)
-		if current.Len() >= maxWidth {
+		if r == '\n' {
+			// Actual newline - split here
 			inputLines = append(inputLines, current.String())
 			current.Reset()
+		} else {
+			current.WriteRune(r)
+			if current.Len() >= maxWidth {
+				inputLines = append(inputLines, current.String())
+				current.Reset()
+			}
 		}
 	}
 	if current.Len() > 0 {
@@ -1430,7 +1441,7 @@ func (i *inputAreaModel) View() string {
 		}
 	}
 
-	// Build display
+	// Build display lines
 	var displayLines []string
 
 	// Prompt style
@@ -1481,14 +1492,45 @@ func (i *inputAreaModel) View() string {
 		}
 	}
 
-	// Fill remaining height (leave room for shortcuts at bottom and top border)
-	// Final content should be exactly i.height - 1 lines (border adds 1 line = i.height total)
-	targetLines := i.height - 1
-	for len(displayLines) < targetLines-1 {
-		displayLines = append(displayLines, "")
+	// Calculate scroll: reserve 1 line for shortcuts, 1 for border
+	availableLines := i.height - 2 // -1 for border, -1 for shortcuts
+	if availableLines < 1 {
+		availableLines = 1
 	}
 
-	// Shortcuts bar at bottom right
+	// Update max scroll
+	i.maxScrollY = len(displayLines) - availableLines
+	if i.maxScrollY < 0 {
+		i.maxScrollY = 0
+	}
+
+	// Auto-scroll to keep cursor visible
+	if cursorLine > i.scrollY+availableLines-1 {
+		i.scrollY = cursorLine - availableLines + 1
+	}
+	if cursorLine < i.scrollY {
+		i.scrollY = cursorLine
+	}
+	if i.scrollY > i.maxScrollY {
+		i.scrollY = i.maxScrollY
+	}
+
+	// Apply scroll offset
+	var visibleLines []string
+	endIdx := i.scrollY + availableLines
+	if endIdx > len(displayLines) {
+		endIdx = len(displayLines)
+	}
+	if i.scrollY < len(displayLines) {
+		visibleLines = displayLines[i.scrollY:endIdx]
+	}
+
+	// Fill remaining height
+	for len(visibleLines) < availableLines {
+		visibleLines = append(visibleLines, "")
+	}
+
+	// Shortcuts bar at bottom right (always visible)
 	shortcutStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("245"))
 	shortcuts := "Ctrl+P:cmds  Ctrl+G:logs  Ctrl+B:sidebar  Ctrl+K:keys"
@@ -1497,20 +1539,9 @@ func (i *inputAreaModel) View() string {
 	if padding < 0 {
 		padding = 0
 	}
-	// Only add shortcuts if we have room
-	if len(displayLines) < targetLines {
-		displayLines = append(displayLines, strings.Repeat(" ", padding)+shortcutStyle.Render(shortcuts))
-	}
+	visibleLines = append(visibleLines, strings.Repeat(" ", padding)+shortcutStyle.Render(shortcuts))
 
-	// Ensure exactly targetLines lines
-	for len(displayLines) < targetLines {
-		displayLines = append(displayLines, "")
-	}
-	if len(displayLines) > targetLines {
-		displayLines = displayLines[:targetLines]
-	}
-
-	content := strings.Join(displayLines, "\n")
+	content := strings.Join(visibleLines, "\n")
 
 	// Apply style with top border
 	style := lipgloss.NewStyle().
@@ -2440,8 +2471,10 @@ func (m *ModernTUIModel) Init() tea.Cmd {
 
 	// Start event listeners (confirmation requests + retry events) and enable mouse
 	// Also start spinner tick for animations
+	// Enable bracketed paste mode for proper paste detection
 	return tea.Batch(
 		func() tea.Msg { return tea.EnableMouseCellMotion() },
+		func() tea.Msg { return tea.EnableBracketedPaste() },
 		m.pollConfirmRequest(),
 		m.pollRetryEvents(),
 		streamTickCmd(m.streamDebounce), // Start spinner animation loop
@@ -2682,13 +2715,32 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			m.resetESCState()
 
-			// Paste protection: ignore Enter if it comes right after a paste operation
+			// Debug: log Enter key timing for paste protection analysis
+			logger.Debug("ui", "KeyEnter: wasPaste=%v, pasteCharCount=%d, sincePaste=%v, sinceLastInput=%v",
+				m.wasPaste, m.pasteCharCount, time.Since(m.pasteEndTime), time.Since(m.lastInputTime))
+
+			// Enhanced paste protection: ignore Enter if it comes right after a paste operation
 			// This prevents auto-send when pasting content with trailing newline
-			if m.wasPaste && time.Since(m.lastInputTime) < 200*time.Millisecond {
-				m.wasPaste = false // Reset flag
-				return m, nil      // Ignore this Enter
+			// Use multiple checks for robustness:
+			// 1. Check if last input was a paste (msg.Paste flag)
+			// 2. Check if within protection window (500ms for large pastes, 300ms normal)
+			// 3. Check if paste ended recently (pasteEndTime)
+			protectionWindow := 300 * time.Millisecond
+			if m.pasteCharCount > 50 {
+				// Large paste - extend protection window
+				protectionWindow = 500 * time.Millisecond
 			}
-			m.wasPaste = false // Reset flag
+			if m.wasPaste || time.Since(m.pasteEndTime) < protectionWindow {
+				logger.Debug("ui", "KeyEnter: INSERT NEWLINE (paste protection)")
+				m.wasPaste = false
+				m.pasteCharCount = 0
+				// Insert newline instead of ignoring - this is part of pasted content
+				runes := []rune(m.input)
+				m.input = string(runes[:m.cursor]) + "\n" + string(runes[m.cursor:])
+				m.cursor++
+				m.updateComponents()
+				return m, nil
+			}
 
 			// If in session selection mode, switch to selected session
 			// This check must come BEFORE the empty input check
@@ -2877,9 +2929,36 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateComponents()
 
 		case tea.KeyRunes:
+			// Debug: log paste events to understand the actual behavior
+			//logger.Debug("ui", "KeyRunes: paste=%v, runes=%d, time=%v", msg.Paste, len(msg.Runes), time.Now().Format("15:04:05.000"))
+
 			// Track paste operations and input time for paste protection
-			m.lastInputTime = time.Now()
-			m.wasPaste = msg.Paste
+			now := time.Now()
+			timeSinceLastInput := now.Sub(m.lastInputTime)
+			m.lastInputTime = now
+
+			if msg.Paste {
+				// Terminal explicitly marked this as paste (bracketed paste mode)
+				m.wasPaste = true
+				m.pasteEndTime = now
+				m.pasteCharCount += len(msg.Runes)
+				m.rapidInputCount = 0
+			} else if timeSinceLastInput < 30*time.Millisecond {
+				// Speed-based paste detection: if inputs come faster than 30ms,
+				// it's likely a paste (normal typing is ~50-150ms between keystrokes)
+				m.rapidInputCount++
+				if m.rapidInputCount >= 3 {
+					// 3+ rapid consecutive inputs = paste
+					m.wasPaste = true
+					m.pasteEndTime = now
+					m.pasteCharCount += len(msg.Runes)
+				}
+			} else {
+				// Slow input = normal typing, reset paste state
+				m.wasPaste = false
+				m.pasteCharCount = 0
+				m.rapidInputCount = 0
+			}
 
 			runes := []rune(m.input)
 			m.input = string(runes[:m.cursor]) + string(msg.Runes) + string(runes[m.cursor:])
