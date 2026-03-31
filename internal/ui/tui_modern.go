@@ -228,6 +228,7 @@ type ModernTUIModel struct {
 	currentToolCall    *ToolCallInfo
 	currentToolResult  *ToolResultInfo
 	toolCallHistory   []ToolCallInfo // Keep history of tool calls in current turn
+	pendingDiffs      []string      // Collected diff content to append to assistant response
 
 	// Agent status display
 	currentAgentInfo   *AgentEventMsg
@@ -3112,13 +3113,23 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Clear retry status on successful completion
 			m.ClearRetryStatus()
 			if msg.Content != "" {
+				// Append any collected diffs to the response
+				finalContent := msg.Content
+				if len(m.pendingDiffs) > 0 {
+					finalContent += "\n\n---\n**File Changes:**\n"
+					for _, diff := range m.pendingDiffs {
+						finalContent += diff + "\n"
+					}
+				}
 				m.messages = append(m.messages, ChatMessageFinal{
 					Role:      "assistant",
-					Content:   msg.Content,
+					Content:   finalContent,
 					Thinking:  msg.Thinking,
 					Timestamp: time.Now(),
 				})
 			}
+			// Clear pending diffs after appending
+			m.pendingDiffs = nil
 			m.mainArea.messages = m.messages
 			m.loading = false
 			m.inputArea.loading = false
@@ -3145,23 +3156,10 @@ func (m *ModernTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Update UI to show tool status bar
 				m.updateComponents()
 			}
-			// Handle tool result - display diff info
-			if msg.ToolResult != nil {
-				// Add tool result as a system message for visibility
-				resultContent := msg.ToolResult.Content
-				if resultContent != "" {
-					// Format tool result for display
-					displayContent := fmt.Sprintf("📝 %s\n%s", msg.ToolResult.Name, resultContent)
-					m.messages = append(m.messages, ChatMessageFinal{
-						Role:      "system",
-						Content:   displayContent,
-						Timestamp: time.Now(),
-					})
-					m.mainArea.messages = m.messages
-					m.recalculateLayout()
-					m.scrollToBottom()
-					m.updateComponents()
-				}
+			// Handle tool result - collect diff for appending to assistant response
+			if msg.ToolResult != nil && msg.ToolResult.Content != "" {
+				// Collect diff content to append to assistant response later
+				m.pendingDiffs = append(m.pendingDiffs, msg.ToolResult.Content)
 			}
 			// Handle agent event status
 			if msg.AgentEvent != nil {
